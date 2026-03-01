@@ -23,7 +23,6 @@ import time
 import json
 import asyncio
 
-from src.brainos_client import run_task, BrainOSUnavailableError
 from src.claude_executor import solve_with_claude
 from src.mcp_bridge import discover_tools, call_tool
 from src.policy_checker import evaluate_policy_rules
@@ -49,7 +48,7 @@ from src.recovery_agent import wrap_with_recovery
 from src.self_reflection import reflect_on_answer, build_improvement_prompt, should_improve
 from src.output_validator import validate_output, get_missing_fields_prompt
 from src.self_moa import quick_synthesize as moa_quick
-from src.five_phase_executor import five_phase_execute, should_use_five_phase
+from src.five_phase_executor import five_phase_execute
 from src.finance_tools import build_finance_context                                           # context injection
 from src.context_rl import check_context_accuracy, record_context_outcome                    # RL drift detection
 from src.dynamic_fsm import synthesize_if_needed, is_known_type                              # dynamic FSM for novel process types
@@ -525,8 +524,6 @@ class MiniAIWorker:
         answer = ""
         tool_count = 0
         error = None
-        _brainos_handled = False  # kept for downstream guards that check this flag
-
         if not self.budget.should_skip_llm:
             try:
                 # UCB1 bandit selects strategy based on past outcomes per process type
@@ -598,8 +595,7 @@ class MiniAIWorker:
         # Numeric MoA — dual top_p synthesis for financial answer validation
         # Runs when the answer has tool results (data-driven) + numeric content.
         # Run BEFORE mutation log append so replacement doesn't lose the log.
-        if (answer and not error and not _brainos_handled
-                and tool_count > 0 and not self.budget.should_skip_llm):
+        if (answer and not error and tool_count > 0 and not self.budget.should_skip_llm):
             try:
                 moa_numeric = await numeric_moa_synthesize(
                     task_text=task_text,
@@ -697,9 +693,9 @@ class MiniAIWorker:
                     pass
 
         # MoA synthesis — dual top_p for pure-reasoning tasks.
-        # Skip if: BrainOS handled it (already synthesized), tools were used (data-dependent),
-        # or budget is exhausted. Never run on bracket-format exact_match answers.
-        if (answer and not error and not _brainos_handled
+        # Skip if tools were used (data-dependent) or budget exhausted.
+        # Never run on bracket-format exact_match answers.
+        if (answer and not error
                 and tool_count == 0 and not self.budget.should_skip_llm
                 and not answer.strip().startswith('[')):
             try:
