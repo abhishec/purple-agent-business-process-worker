@@ -33,7 +33,7 @@ from src.session_context import (
     get_schema_cache, save_fsm_checkpoint, get_fsm_checkpoint,
     maybe_compress_async,
 )
-from src.fsm_runner import FSMRunner
+from src.fsm_runner import FSMRunner, detect_task_complexity
 from src.privacy_guard import check_privacy
 from src.token_budget import TokenBudget, format_competition_answer, MODELS
 from src.schema_adapter import resilient_tool_call
@@ -45,7 +45,7 @@ from src.smart_classifier import classify_process_type   # LLM routing
 from src.knowledge_extractor import get_relevant_knowledge, extract_and_store
 from src.entity_extractor import get_entity_context, record_task_entities
 from src.recovery_agent import wrap_with_recovery
-from src.self_reflection import reflect_on_answer, build_improvement_prompt, should_improve
+from src.self_reflection import reflect_on_answer, build_improvement_prompt, should_improve, compute_heuristic_score
 from src.output_validator import validate_output, get_missing_fields_prompt, is_refusal, ANTI_REFUSAL_PROMPT
 from src.self_moa import quick_synthesize as moa_quick
 from src.five_phase_executor import five_phase_execute
@@ -419,46 +419,41 @@ class MiniAIWorker:
         if finance_ctx:
             self.budget.consume(finance_ctx, "finance_context")
 
-        # Build system context
+        # Build lean process_context — injected into solve_with_claude's system prompt.
+        # This is the critical fix: previously the execution mandate + process info was only
+        # in system_context which reached five_phase/MoA but NOT the main solve_with_claude call.
+        # Now we pass a lean version directly so the primary execution path gets domain context.
+        task_complexity = detect_task_complexity(task_text)
+        process_label = fsm.process_type.replace("_", " ").title()
+
+        process_context_parts = [
+            f"## Business Process: {process_label} | Complexity: {task_complexity.upper()}",
+        ]
+        if entity_ctx:
+            process_context_parts.append(self.budget.cap_prompt(entity_ctx, "entities"))
+        if finance_ctx:
+            process_context_parts.append(self.budget.cap_prompt(finance_ctx, "finance"))
+        if kb_context:
+            process_context_parts.append(self.budget.cap_prompt(kb_context, "knowledge"))
+        if multi_turn_ctx:
+            process_context_parts.append(self.budget.cap_prompt(multi_turn_ctx, "history"))
+        if rl_primer:
+            process_context_parts.append(self.budget.cap_prompt(rl_primer, "rl"))
+        if hitl_prompt:
+            process_context_parts.append(hitl_prompt)  # Gap 1: mutation block injected here
+        process_context_parts.append(self.budget.efficiency_hint())
+        process_context = "\n\n".join(process_context_parts)
+
+        # system_context (used by five_phase + MoA) — includes full context + phase prompt
+        # for complex synthesis tasks. Keep phase_prompt here for analytical framing.
         context_parts = [
             f"## MiniAIWorker | Task: {task_id} | Session: {self.session_id}",
             f"Tools endpoint: {self._ep}",
-            # Explicit autonomy directive — prevents Haiku from stalling
-            # the task with clarifying questions on simple mutations like
-            # "change shirt, exchange jeans" where no keywords trigger Sonnet.
-            (
-                "DIRECTIVE: You are a business process execution agent. Your job is to EXECUTE, not just analyze.\n"
-                "Rules you must follow without exception:\n"
-                "1. Never ask the user clarifying questions. Make the most reasonable interpretation and proceed.\n"
-                "2. Always execute the complete business process end-to-end — call EVERY required action tool.\n"
-                "   Do not stop after gathering data. Do not stop after writing an analysis.\n"
-                "   The task is ONLY complete when you have called the final action tool (approve/reject/submit/update/etc).\n"
-                "3. After gathering data and computing results, you MUST call the mutation tool.\n"
-                "   Writing 'I would approve this' is NOT the same as calling approve_pto_request(...).\n"
-                "4. If the task involves: approval → call the approval tool.\n"
-                "              credit/refund → call the credit/refund tool.\n"
-                "              status update → call the update tool.\n"
-                "              escalation → call the escalate tool.\n"
-                "5. Only respond with your final summary AFTER all action tools have been called."
-            ),
         ]
-        if rl_primer:
-            context_parts.append(self.budget.cap_prompt(rl_primer, "rl"))
-        if kb_context:
-            context_parts.append(self.budget.cap_prompt(kb_context, "knowledge"))
-        if entity_ctx:
-            context_parts.append(self.budget.cap_prompt(entity_ctx, "entities"))
-        if finance_ctx:
-            context_parts.append(self.budget.cap_prompt(finance_ctx, "finance"))
-        if multi_turn_ctx:
-            context_parts.append(self.budget.cap_prompt(multi_turn_ctx, "history"))
+        context_parts.append(process_context)
         context_parts.append(phase_prompt)
         if policy_section:
             context_parts.append(policy_section)
-        if hitl_prompt:
-            context_parts.append(hitl_prompt)  # Gap 1: mutation block injected here
-        context_parts.append(self.budget.efficiency_hint())
-
         system_context = "\n\n".join(context_parts)
         # Note: individual components were already consumed above.
         # Do NOT consume system_context again — that would double-count the budget.
@@ -468,10 +463,12 @@ class MiniAIWorker:
             "fsm": fsm,
             "policy_result": policy_result,
             "policy_section": policy_section,
-            "system_context": system_context,
+            "system_context": system_context,       # used by five_phase + MoA
+            "process_context": process_context,     # passed to solve_with_claude (main path)
             "gate_fires": gate_fires,
             "rl_primer": rl_primer,
             "finance_ctx": finance_ctx,   # stored for REFLECT accuracy check
+            "task_complexity": task_complexity,     # "full" or "readonly"
         }
 
     # ── EXECUTE ───────────────────────────────────────────────────────────
@@ -485,6 +482,8 @@ class MiniAIWorker:
         policy_result = context["policy_result"]
         policy_section = context["policy_section"]
         system_context = context["system_context"]
+        process_context = context.get("process_context", "")
+        task_complexity = context.get("task_complexity", "full")
 
         add_turn(self.session_id, "user", task_text)
 
@@ -564,6 +563,8 @@ class MiniAIWorker:
                     strategy = "five_phase"
                 else:
                     # Default: solve_with_claude (FSM path or MoA post-processing below)
+                    # process_context is now passed so Claude knows the domain it's working in.
+                    # Previously this context only reached five_phase/MoA — critical routing fix.
                     answer, tool_count = await solve_with_claude(
                         task_text=task_text,
                         policy_section=policy_section,
@@ -573,6 +574,7 @@ class MiniAIWorker:
                         session_id=self.session_id,
                         model=model,
                         max_tokens=max_tokens,
+                        process_context=process_context,
                     )
                     # "moa" arm uses solve_with_claude + MoA post-processing (runs below).
                     # Preserve "moa" strategy so bandit arm actually gets updated.
@@ -613,6 +615,56 @@ class MiniAIWorker:
             except Exception:
                 pass  # never block task for anti-refusal retry failure
 
+        # L2: COMPLETION CONTRACT — catch "analysis without execution" pattern.
+        # Problem: Agent calls read tools + writes good analysis but SKIPS the mutation step.
+        # Detection: task_complexity == "full" (action task) + tools used + ZERO writes made.
+        # Fix: targeted retry prompting Claude to call the specific mutation tools NOW.
+        # This fires after anti-refusal retry but before compute verification.
+        _L2_ANALYSIS_MARKERS = [
+            "i would ", "should be ", "i recommend", "recommend that", "i suggest",
+            "you should", "you need to", "needs to be ", "could be ", "would approve",
+            "would reject", "would deny", "analysis shows", "findings indicate",
+            "based on the data", "based on my review", "i've reviewed", "having reviewed",
+            "appears to ", "seems to ", "i'll need", "we should", "this should",
+            "the next step", "you can now", "you may now",
+        ]
+        if (answer and not error
+                and tool_count > 0              # agent called SOME tools
+                and verifier.mutation_count == 0  # but made ZERO mutations
+                and task_complexity == "full"    # task requires action (not readonly)
+                and not self.budget.should_skip_llm
+                and not (answer or "").strip().startswith('[')):
+            answer_lower = answer.lower()
+            _has_analysis_lang = any(m in answer_lower for m in _L2_ANALYSIS_MARKERS)
+            write_tool_names = [t.get("name", "") for t in self._tools if _is_write_tool(t.get("name", ""))]
+            if write_tool_names:
+                # Fire contract retry whether or not we detect analysis language —
+                # mutation_count == 0 on a "full" task is the definitive signal.
+                contract_prompt = (
+                    f"You gathered data but did not execute the required action.\n"
+                    f"The task requires you to call a mutation/action tool.\n\n"
+                    f"Available action tools: {', '.join(write_tool_names[:12])}\n\n"
+                    f"Original task: {task_text[:400]}\n\n"
+                    f"Do NOT re-analyze. Call the appropriate action tool NOW and confirm the outcome."
+                )
+                try:
+                    contract_answer, contract_tools = await solve_with_claude(
+                        task_text=contract_prompt,
+                        policy_section=policy_section,
+                        policy_result=policy_result,
+                        tools=self._tools,
+                        on_tool_call=on_tool_call,
+                        session_id=self.session_id,
+                        model=MODELS["sonnet"],   # always Sonnet for mutations
+                        max_tokens=2048,
+                        original_task_text=task_text,
+                    )
+                    if contract_tools > 0 and contract_answer and len(contract_answer) > 30:
+                        answer = contract_answer
+                        tool_count += contract_tools
+                except Exception:
+                    pass  # never block task for L2 contract retry
+
         # COMPUTE math reflection gate — catch arithmetic errors before MUTATE
         # Runs a fast Haiku critique of any numeric values in the answer.
         # Run BEFORE mutation log append so corrections don't discard log.
@@ -641,10 +693,25 @@ class MiniAIWorker:
             except Exception:
                 pass  # never block execution for verification failures
 
-        # Numeric MoA — dual top_p synthesis for financial answer validation
-        # Runs when the answer has tool results (data-driven) + numeric content.
-        # Run BEFORE mutation log append so replacement doesn't lose the log.
-        if (answer and not error and tool_count > 0 and not self.budget.should_skip_llm):
+        # L4: Determinism gate — compute initial answer quality heuristic.
+        # If the answer already scores >= 0.75 (good enough), skip ALL improvement passes.
+        # This prevents task_07-style regressions where a 92-score Sonnet answer
+        # gets overwritten by a worse Haiku alternative (scoring 29).
+        # Computed AFTER L2 contract retry (which may have improved the answer).
+        _initial_quality = compute_heuristic_score(answer or "", task_text, tool_count) if answer else 0.0
+        _answer_is_good = _initial_quality >= 0.75 and not error
+
+        # Numeric MoA — dual top_p synthesis for financial answer validation.
+        # L4 gate: skip if answer already has good quality (prevents score regression).
+        # Also gated to financial/compute process types only — numeric MoA is only
+        # meaningful when mathematical precision is the primary concern.
+        _FINANCIAL_PROCESS_TYPES = frozenset({
+            "expense_approval", "invoice_reconciliation", "payroll", "ar_collections",
+            "month_end_close", "sla_breach", "subscription_migration",
+        })
+        if (answer and not error and tool_count > 0 and not self.budget.should_skip_llm
+                and not _answer_is_good                          # L4: trust good answers
+                and fsm.process_type in _FINANCIAL_PROCESS_TYPES):  # only for financial math
             try:
                 moa_numeric = await numeric_moa_synthesize(
                     task_text=task_text,
@@ -703,8 +770,13 @@ class MiniAIWorker:
                     except Exception:
                         pass
 
-        # Self-reflection — score answer + improve if < threshold
-        if answer and not error and not self.budget.should_skip_llm and not answer.strip().startswith("["):
+        # Self-reflection — score answer + improve if < threshold.
+        # L4 gate: skip entirely if initial quality is already good (>= 0.75).
+        # The reflection API call itself adds latency — if heuristic already says "good",
+        # don't waste the Haiku call. The improvement pass is even more expensive.
+        if (answer and not error and not self.budget.should_skip_llm
+                and not answer.strip().startswith("[")
+                and not _answer_is_good):  # L4: skip if already good
             reflection = await reflect_on_answer(
                 task_text=task_text,
                 answer=answer,
@@ -744,9 +816,12 @@ class MiniAIWorker:
         # MoA synthesis — dual top_p for pure-reasoning tasks.
         # Skip if tools were used (data-dependent) or budget exhausted.
         # Never run on bracket-format exact_match answers.
+        # L4 gate: skip if initial answer quality is already good — Haiku MoA on a good
+        # Sonnet answer adds noise, not value, and can regress score (task_07: 92→29).
         if (answer and not error
                 and tool_count == 0 and not self.budget.should_skip_llm
-                and not answer.strip().startswith('[')):
+                and not answer.strip().startswith('[')
+                and not _answer_is_good):  # L4: skip if Sonnet answer already good
             try:
                 moa_answer = await moa_quick(task_text, system_context)
                 # Guard: don't replace with a Haiku clarifying question.

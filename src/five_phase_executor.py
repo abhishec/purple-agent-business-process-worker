@@ -119,36 +119,55 @@ async def _phase_gather(
     tools: list[dict] | None,
 ) -> tuple[list[dict], int]:
     """
-    GATHER phase: execute subtasks that require tool calls.
+    GATHER phase: execute subtasks SEQUENTIALLY with context chaining.
 
-    For each subtask, uses Haiku to determine the best tool call, then fires
-    the tool via on_tool_call(). Runs subtasks concurrently (bounded by
-    asyncio.gather). Caps at 8 tool calls total.
+    Improvement over the previous parallel approach:
+    Each subtask sees results from all prior subtasks, enabling dependency chains like:
+      get_order → check_inventory → calculate_refund → process_refund
+    This matches how real business processes work: step N often needs IDs/amounts from step N-1.
 
+    Caps at 8 tool calls total. Each subtask is allowed one tool call.
     Returns (gathered_results, tool_count).
     """
     if on_tool_call is None or not tools:
         return [], 0
 
     tool_names = [t.get("name", "") for t in tools]
-    tool_names_str = ", ".join(tool_names[:20])
+    tool_names_str = ", ".join(tool_names[:25])
 
-    gather_system = (
-        "You are a tool selector. Given a subtask and available tools, output ONLY valid JSON:\n"
-        '{"tool": "tool_name", "params": {"key": "value"}}\n'
-        "If no tool is relevant, output: {}\n"
-        "Available tools: " + tool_names_str
-    )
+    gathered: list[dict] = []
+    tool_count = 0
+    prior_results_ctx = ""
 
-    async def _execute_subtask(subtask: str) -> dict:
+    for subtask in subtasks[:8]:
+        # Include prior results so Haiku can use IDs/values from previous steps.
+        # e.g. after get_order returns {"order_id": "ORD-001", "amount": 150},
+        # the next subtask "Process the refund" can use order_id and amount in params.
+        prior_block = (
+            f"RESULTS FROM PREVIOUS STEPS:\n{prior_results_ctx}\n\n"
+            if prior_results_ctx else ""
+        )
+
+        gather_system = (
+            "You are a tool selector for a business process execution agent.\n"
+            "Given a subtask and context from previous steps, output ONLY valid JSON:\n"
+            '{"tool": "tool_name", "params": {"key": "value"}}\n'
+            "Rules:\n"
+            "- Use IDs and values from PREVIOUS RESULTS in your params (never use placeholder values).\n"
+            "- If no tool is relevant or needed, output: {}\n"
+            "- params values must come from the task text or previous results, not invented.\n"
+            f"Available tools: {tool_names_str}"
+        )
+        user_msg = f"{prior_block}Subtask: {subtask}"
+
         client = _client()
         try:
             response = await asyncio.wait_for(
                 client.messages.create(
                     model=_HAIKU_MODEL,
-                    max_tokens=150,
+                    max_tokens=200,   # slightly more room for complex params
                     system=gather_system,
-                    messages=[{"role": "user", "content": f"Subtask: {subtask}"}],
+                    messages=[{"role": "user", "content": user_msg}],
                 ),
                 timeout=10.0,
             )
@@ -157,28 +176,20 @@ async def _phase_gather(
             raw = re.sub(r"\s*```$", "", raw)
             tool_call = json.loads(raw)
             if not tool_call or "tool" not in tool_call:
-                return {"subtask": subtask, "result": None, "skipped": True}
+                gathered.append({"subtask": subtask, "result": None, "skipped": True})
+                continue
             result = await on_tool_call(tool_call["tool"], tool_call.get("params", {}))
-            return {"subtask": subtask, "tool": tool_call["tool"], "result": result}
+            entry = {"subtask": subtask, "tool": tool_call["tool"], "result": result}
+            gathered.append(entry)
+            tool_count += 1
+            # Update context chain — next subtask sees this result
+            result_summary = json.dumps(result, default=str)[:300]
+            prior_results_ctx += f"- {tool_call['tool']}: {result_summary}\n"
+        except asyncio.TimeoutError:
+            gathered.append({"subtask": subtask, "error": "timeout"})
         except Exception as exc:
-            return {"subtask": subtask, "error": str(exc)}
+            gathered.append({"subtask": subtask, "error": str(exc)})
 
-    try:
-        results = await asyncio.wait_for(
-            asyncio.gather(*[_execute_subtask(st) for st in subtasks[:8]], return_exceptions=True),
-            timeout=_GATHER_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        results = []
-
-    gathered = []
-    for r in results:
-        if isinstance(r, Exception):
-            gathered.append({"error": str(r)})
-        elif isinstance(r, dict):
-            gathered.append(r)
-
-    tool_count = sum(1 for r in gathered if "tool" in r and "error" not in r)
     return gathered, tool_count
 
 

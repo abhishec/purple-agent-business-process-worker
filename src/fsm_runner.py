@@ -72,10 +72,19 @@ def detect_task_complexity(task_text: str) -> str:
 
     Read-only tasks get a 3-state path (DECOMPOSE → ASSESS → COMPLETE) instead
     of the full 8-state path, saving latency and tool budget.
+
+    IMPORTANT: Be conservative — only shortcircuit when there is NO possible action word.
+    The competition penalizes missing tool calls more than it rewards shortcircuit speed.
+    A false "readonly" classification causes missed mutation tool calls = 0 functional score.
+    Only shortcircuit when the task is PURELY informational with zero ambiguity.
     """
     has_action = bool(_ACTION_PATTERNS.search(task_text))
     has_readonly = bool(_READONLY_PATTERNS.search(task_text))
-    if has_readonly and not has_action:
+
+    # Only shortcircuit if: clearly readonly AND no action verb whatsoever
+    # AND the task text is short enough that we can be confident it's pure query.
+    # Longer tasks (> 120 chars) often have embedded action requirements not caught by regex.
+    if has_readonly and not has_action and len(task_text) <= 120:
         return "readonly"
     return "full"
 
@@ -335,82 +344,63 @@ class FSMRunner:
             self.ctx.approval_count += 1
 
     def build_phase_prompt(self) -> str:
-        state = self.ctx.current_state
-        process = self.ctx.process_type.replace("_", " ").title()
+        """
+        Build process context prompt for injection into system context.
 
-        # Cap history display to last 3 completed states + current — avoids prompt bloat
-        recent_history = (self.ctx.state_history + [state.value])[-4:]
-        prefix = "...→ " if len(self.ctx.state_history) > 3 else ""
-        history_str = prefix + " → ".join(recent_history)
+        Design note: This prompt describes the COMPLETE required workflow for the
+        process type, not just the "current phase." Previously, per-phase instructions
+        like "ASSESS: DO NOT take any actions yet" were causing Claude to stop after
+        gathering data, never reaching the mutation step.
+
+        This prompt is used by five_phase and MoA (which use system_context).
+        The primary solve_with_claude path receives this via process_context in worker_brain.
+        """
+        process = self.ctx.process_type.replace("_", " ").title()
+        state = self.ctx.current_state
+
+        # Determine what phases this process actually requires
+        has_approval_gate = FSMState.APPROVAL_GATE in self.states
+        has_compute = FSMState.COMPUTE in self.states
+        has_notify = FSMState.SCHEDULE_NOTIFY in self.states
+        task_type = "full" if FSMState.MUTATE in self.states else "readonly"
 
         lines = [
             f"## Business Process: {process}",
-            f"## Execution Phase: {state.value}",
-            f"## Phase History: {history_str}",
+            f"## Task Type: {task_type.upper()} — {'requires mutations' if task_type == 'full' else 'read-only query'}",
             "",
+            "## Required Execution Sequence (complete ALL applicable steps):",
         ]
 
-        instructions = {
-            FSMState.DECOMPOSE: (
-                "Break this task into sub-tasks. Identify all data you need before acting. "
-                "List the process type and key entities (IDs, amounts, parties) you've identified."
-            ),
-            FSMState.ASSESS: (
-                "Gather ALL required data via read-only tools. "
-                "DO NOT take any actions or call mutation tools yet — only collect. "
-                "Collect: account balances, policy docs, entity states, history."
-            ),
-            FSMState.COMPUTE: (
-                "Run all required financial calculations now. "
-                "DO NOT call any tools — use only data already collected in ASSESS. "
-                "Compute: price deltas, prorated amounts, policy thresholds, depreciation, "
-                "amortization, SLA credits, variance percentages. "
-                "Show your work. Prepare an exact action plan with calculated values."
-            ),
-            FSMState.POLICY_CHECK: (
-                "Verify all policy rules against computed values. "
-                "Check every threshold, approval limit, and constraint. "
-                "Do not proceed to mutation if any policy rule is violated."
-            ),
-            FSMState.APPROVAL_GATE: (
-                "Human approval is required before any state changes. "
-                "MUTATION TOOLS ARE BLOCKED. Present your approval request document: "
-                "proposed actions, computed amounts, policy compliance status, risk assessment."
-            ),
-            FSMState.MUTATE: (
-                "All data collected. All calculations complete. All approvals received. "
-                "Execute the required state changes via tools. Be systematic and complete. "
-                "Log each action as you take it."
-            ),
-            FSMState.SCHEDULE_NOTIFY: (
-                "Mutations complete. Now handle all notifications and scheduling: "
-                "send confirmations, schedule follow-ups, notify relevant parties, "
-                "create audit log entries, set deadline reminders."
-            ),
-            FSMState.COMPLETE: (
-                "Summarize all completed actions and their outcomes. "
-                "List what was done, what was approved, what was deferred. Be concise."
-            ),
-            FSMState.ESCALATE: (
-                f"ESCALATION REQUIRED: {self.ctx.escalation_reason}\n"
-                "Do not attempt to resolve this yourself. "
-                "Explain clearly why escalation is needed and who must act."
-            ),
-            FSMState.FAILED: (
-                f"FAILED: {self.ctx.data.get('failure_reason', 'Unknown error')}\n"
-                "Explain what went wrong and what the next step should be."
-            ),
-        }
+        step = 1
+        lines.append(f"{step}. GATHER: Call get_*/list_*/search_*/calculate_* tools to collect all required data")
+        step += 1
+        if has_compute:
+            lines.append(f"{step}. COMPUTE: Calculate required amounts/deltas from the gathered data (show work)")
+            step += 1
+        if has_approval_gate:
+            lines.append(f"{step}. CONFIRM: Call confirm_with_user (it auto-confirms — returns 'ok' immediately)")
+            step += 1
+        if task_type == "full":
+            lines.append(f"{step}. MUTATE: Call the required action tools — approve_*/reject_*/update_*/cancel_*/process_*/credit_*/refund_*/flag_*/escalate_*/deactivate_*/revoke_*")
+            step += 1
+        if has_notify:
+            lines.append(f"{step}. NOTIFY: Call send_*/notify_*/post_*/draft_* notification tools")
+            step += 1
+        lines.append(f"{step}. COMPLETE: Summarize completed actions with outcomes and status")
 
-        # synthesized definition instructions take priority (process-specific)
-        # Fall back to hardcoded instructions for known built-in process types
-        synth_instruction = None
-        if self._definition:
-            synth_instruction = self._definition.get("state_instructions", {}).get(state.value)
+        if task_type == "full":
+            lines.append("")
+            lines.append("CRITICAL: Do NOT stop after GATHER or COMPUTE. Continue until ALL mutation tools have been called.")
 
-        lines.append(synth_instruction or instructions.get(state, "Execute the current phase."))
+        # Escalation/failure context if relevant
+        if state == FSMState.ESCALATE:
+            lines.append(f"\n⚠️ ESCALATION REQUIRED: {self.ctx.escalation_reason}")
+            lines.append("Explain clearly why escalation is needed and which team/person must act.")
+        elif state == FSMState.FAILED:
+            lines.append(f"\n❌ FAILED: {self.ctx.data.get('failure_reason', 'Unknown error')}")
+            lines.append("Explain what went wrong and what the next step should be.")
 
-        # Surface synthesis indicator for transparency
+        # Synthesized definition context
         if self._definition and self._definition.get("_synthesized"):
             lines.append(f"\n[Dynamic FSM: synthesized for '{self.ctx.process_type}']")
 

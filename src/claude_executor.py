@@ -8,7 +8,7 @@ from src.config import FALLBACK_MODEL, ANTHROPIC_API_KEY
 from src.structured_output import format_final_answer
 
 MAX_ITERATIONS = 20
-MAX_TOOL_CALLS = 18
+MAX_TOOL_CALLS = 25   # raised from 18 — complex tasks (hr_offboarding, month_end) need more room
 
 
 async def solve_with_claude(
@@ -21,6 +21,7 @@ async def solve_with_claude(
     model: str | None = None,
     max_tokens: int = 4096,
     original_task_text: str = "",
+    process_context: str = "",   # process type + entity context from worker_brain PRIME
 ) -> tuple[str, int]:
     """
     Primary Claude execution engine. Returns (answer, tool_count).
@@ -29,6 +30,11 @@ async def solve_with_claude(
 
     original_task_text: when this call is an improvement pass, pass the original task
     here so Claude has full context. It is prepended to the system prompt.
+
+    process_context: lean domain context (process type, key entities, HITL flag).
+    Injected into system prompt so Claude knows what domain it's working in.
+    Previously this was only in system_context which only reached five_phase/MoA —
+    now it reaches the primary execution path.
     """
     client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     effective_model = model or FALLBACK_MODEL
@@ -42,6 +48,8 @@ async def solve_with_claude(
             "Use the above for full context while completing the improvement request.\n"
         )
 
+    process_context_block = f"\n{process_context}\n" if process_context else ""
+
     system_prompt = f"""You are an autonomous business operations agent running in a benchmark evaluation.
 
 CRITICAL RULES:
@@ -53,15 +61,25 @@ CRITICAL RULES:
 6. confirm_with_user ALWAYS returns "ok" (auto-confirmed). When you call it and get status=ok, IMMEDIATELY call the next mutation tool. Do NOT stop to ask questions.
 7. The task text contains ALL information you need. Never ask "which order?" or "what action?" — it is already specified.
 
+EXECUTION MANDATE — COMPLETE THE FULL PROCESS, NOT JUST ANALYSIS:
+You MUST call mutation/action tools. Analysis alone = 0 points on functional correctness.
+WRONG (these responses FAIL):
+  - "I would approve this request" → you must call approve_pto_request() or approve_expense()
+  - "I recommend cancelling the order" → you must call cancel_order() or cancel_subscription()
+  - "The analysis shows this should be refunded" → you must call process_refund() or credit_account()
+  - "Based on the data, escalation is required" → you must call escalate_ticket() or page_oncall()
+CORRECT: Read data → compute → call the mutation tool → THEN write your summary.
+The task is ONLY complete when you have called the final action tool.
+
 EXECUTION ORDER (critical for scoring):
 - Phase 1 READ: Call all get_*/check_*/calculate_* tools first to gather data.
 - Phase 2 CONFIRM: Call confirm_with_user if required by policy (it auto-confirms, returns ok immediately).
-- Phase 3 EXECUTE: Call modify_*/update_*/cancel_*/process_*/create_*/post_*/send_*/approve_*/flag_* mutation tools.
+- Phase 3 EXECUTE: Call modify_*/update_*/cancel_*/process_*/create_*/post_*/send_*/approve_*/reject_*/flag_*/credit_*/refund_*/escalate_*/deactivate_*/revoke_* mutation tools.
 - Phase 4 NOTIFY: Call notification/communication tools last (send_notification, post_status_update, draft_*).
 - Always escalate/page BEFORE creating reports. Always calculate BEFORE drafting client communications.
 - If escalation is required per task policy: call escalate_*/page_* tools BEFORE notify_*/send_* tools.
 - Use EVERY available tool that is relevant to the task — incomplete tool coverage loses points.
-{policy_section}{original_context_block}
+{process_context_block}{policy_section}{original_context_block}
 Execute the task fully and in correct order. After all actions, provide a concise answer."""
 
     messages: list[dict] = [{"role": "user", "content": task_text}]

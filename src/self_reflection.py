@@ -224,3 +224,12 @@ def should_improve(reflection: dict) -> bool:
         not reflection.get("complete", True)
         or reflection.get("score", 1.0) < IMPROVE_THRESHOLD
     ) and bool(reflection.get("missing") or reflection.get("improve_prompt"))
+
+
+def compute_heuristic_score(answer: str, task_text: str, tool_count: int) -> float:
+    """
+    Public API for fast zero-API quality scoring.
+    Used by L4 determinism gate in worker_brain.py to decide whether to run
+    improvement passes (MoA, reflection). If score >= 0.75, trust the answer.
+    """
+    return _heuristic_score(answer, task_text, tool_count)
