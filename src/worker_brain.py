@@ -311,7 +311,7 @@ class MiniAIWorker:
             "[SYNTHETIC DATA]", "fictional test fixtures", "synthetic evaluation",
         ]
         self._benchmark_mode = any(
-            m.lower() in task_text[:500].lower() for m in _BENCHMARK_MARKERS
+            m.lower() in task_text.lower() for m in _BENCHMARK_MARKERS
         )
 
         # Privacy fast-fail (Gap 1 precursor — refuse before any tool cost)
@@ -574,8 +574,8 @@ class MiniAIWorker:
         execute_prompt = (
             "PHASE 2 — EXECUTE: Data has been gathered. NOW call EVERY required "
             "action tool to complete the task.\n\n"
-            f"DATA COLLECTED IN PHASE 1:\n{(gathered or 'No data collected')[:1400]}\n\n"
-            f"ORIGINAL TASK: {task_text[:500]}\n\n"
+            f"DATA COLLECTED IN PHASE 1:\n{(gathered or 'No data collected')[:3000]}\n\n"
+            f"ORIGINAL TASK: {task_text[:800]}\n\n"
             "EXECUTE the required mutations. Do NOT re-read. Call the action tools "
             "NOW and provide a complete summary of what was done and the outcomes."
         )
@@ -587,7 +587,7 @@ class MiniAIWorker:
             on_tool_call=on_tool_call,
             session_id=self.session_id,
             model=MODELS["sonnet"],     # hard pin — mutations must not be Haiku
-            max_tokens=2048,
+            max_tokens=4096,
             process_context=process_context,
         )
         total_tools += ec

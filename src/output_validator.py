@@ -213,11 +213,13 @@ def is_refusal(answer: str) -> bool:
     Return True if the answer looks like a refusal — agent declined to act
     rather than attempting the task.
 
-    Criteria: refusal phrase present AND answer is short (< 400 chars).
+    Criteria: refusal phrase present AND answer is short (< 600 chars).
+    Raised from 400 → 600: some model refusals include explanation paragraphs
+    that push past 400 chars while still being a full refusal (no tools called).
     Short threshold prevents false positives on long answers that mention
     limitations in passing while still completing the task.
     """
-    if not answer or len(answer) >= 400:
+    if not answer or len(answer) >= 600:
         return False
     a = answer.lower()
     return any(p in a for p in _REFUSAL_PATTERNS)

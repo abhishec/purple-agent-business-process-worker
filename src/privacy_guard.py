@@ -89,7 +89,7 @@ def check_privacy(task_text: str, task_type: str | None = None) -> dict | None:
         "synthetic evaluation",
     ]
     task_stripped = task_text.strip()
-    if any(marker.lower() in task_stripped[:500].lower() for marker in _BENCHMARK_MARKERS):
+    if any(marker.lower() in task_stripped.lower() for marker in _BENCHMARK_MARKERS):
         return None  # benchmark synthetic data — no PII restrictions apply
 
     # Explicit task type match

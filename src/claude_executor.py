@@ -111,7 +111,7 @@ Execute the task fully and in correct order. After all tool calls are complete, 
                     # Bracket-format exact_match answers must pass through unmodified
                     if raw_answer.startswith('['):
                         return raw_answer, tool_count
-                    return format_final_answer(block.text, policy_result), tool_count
+                    return format_final_answer(block.text, task_text, policy_result), tool_count
             return "", tool_count
 
         if response.stop_reason != "tool_use":
@@ -169,7 +169,7 @@ Execute the task fully and in correct order. After all tool calls are complete, 
             messages.append({"role": "user", "content": clean_results})
 
     # Synthesize an answer from whatever we collected
-    return _synthesize_from_history(messages, tool_count, last_meaningful_content, policy_result), tool_count
+    return _synthesize_from_history(messages, tool_count, last_meaningful_content, policy_result, task_text), tool_count
 
 
 def _synthesize_from_history(
@@ -177,6 +177,7 @@ def _synthesize_from_history(
     tool_count: int,
     last_meaningful_content: str,
     policy_result: dict | None,
+    task_text: str = "",
 ) -> str:
     """
     Build a meaningful final answer from message history when MAX_ITERATIONS
@@ -195,20 +196,20 @@ def _synthesize_from_history(
                     # Bracket-format exact_match answers must pass through unmodified
                     if raw.startswith('['):
                         return raw
-                    return format_final_answer(block.text, policy_result)
+                    return format_final_answer(block.text, task_text, policy_result)
                 if isinstance(block, dict) and block.get("type") == "text":
                     text = block.get("text", "").strip()
                     if text:
                         # Bracket-format exact_match answers must pass through unmodified
                         if text.startswith('['):
                             return text
-                        return format_final_answer(text, policy_result)
+                        return format_final_answer(text, task_text, policy_result)
         elif isinstance(content, str) and content.strip():
             raw = content.strip()
             # Bracket-format exact_match answers must pass through unmodified
             if raw.startswith('['):
                 return raw
-            return format_final_answer(content, policy_result)
+            return format_final_answer(content, task_text, policy_result)
 
     # Collect tool results for a digest summary
     tool_results_text: list[str] = []
@@ -235,4 +236,4 @@ def _synthesize_from_history(
     else:
         base = f"Task executed across {tool_count} tool calls. No further data available."
 
-    return format_final_answer(f"Based on {tool_count} tool calls: {base}", policy_result)
+    return format_final_answer(f"Based on {tool_count} tool calls: {base}", task_text, policy_result)

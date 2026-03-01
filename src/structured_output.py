@@ -164,17 +164,30 @@ def format_final_answer(answer: str, task_text: str = "", policy_result: dict | 
     if policy_result and not policy_result.get("passed"):
         parts.append(f"[POLICY: {policy_result.get('summary', 'Policy check failed')}]")
 
-    # Try to extract and reformat as bracket list
-    items = extract_ranked_items(answer_stripped)
-    if items:
-        bracket = enforce_bracket_format(items)
-        parts.append(bracket)
-    elif task_text and _is_list_task_dynamic(task_text):
-        # Task was classified as a list task but LLM returned prose — still pass through
-        # so the caller can decide to re-prompt.  We don't corrupt a valid prose answer.
+    # Structured output guard — do NOT attempt item extraction when the answer
+    # uses our ## Actions Completed / ## Outcome template. Bullet lines in that
+    # format are tool-call descriptions, not ranked list items. Extracting them
+    # would corrupt the prose answer into a bracket array (wrong format for scorer).
+    _is_structured_output = (
+        "## Actions Completed" in answer_stripped
+        or "## Outcome" in answer_stripped
+        or "## Mutation Verification" in answer_stripped
+    )
+
+    if _is_structured_output:
+        # Structured output: preserve exactly, only prepend policy prefix if needed
         parts.append(answer_stripped)
     else:
-        parts.append(answer_stripped)
+        # Try to extract and reformat as bracket list (for list/ranking tasks only)
+        items = extract_ranked_items(answer_stripped)
+        if items:
+            bracket = enforce_bracket_format(items)
+            parts.append(bracket)
+        elif task_text and isinstance(task_text, str) and _is_list_task_dynamic(task_text):
+            # Task was classified as a list task but LLM returned prose — pass through
+            parts.append(answer_stripped)
+        else:
+            parts.append(answer_stripped)
 
     return "\n".join(parts)
 
