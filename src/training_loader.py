@@ -112,9 +112,9 @@ def _messages_to_task_summary(messages: list[dict]) -> str:
                 # Claude Messages API content blocks
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "text":
-                        return block.get("text", "")[:120]
-                return str(content)[:120]
-            return str(content)[:120]
+                        return block.get("text", "")[:200]
+                return str(content)[:200]
+            return str(content)[:200]
     return ""
 
 
@@ -190,7 +190,7 @@ def _record_to_case_entry(record: dict) -> CaseEntry | None:
 
     return CaseEntry(
         case_id=case_id,
-        task_summary=task_summary[:120],
+        task_summary=task_summary[:200],
         keywords=_extract_keywords(task_summary),
         outcome="success",
         quality=1.0,

@@ -135,11 +135,13 @@ def _compute_variance(task_text: str) -> str | None:
             invoiced  = float(inv_m.group(1).replace(",", ""))
             po        = float(po_m.group(1).replace(",", ""))
         else:
-            # Fallback: positional (largest two dollar amounts)
-            amounts = _extract_dollars(task_text)
-            if len(amounts) < 2:
+            # Fallback: appearance order (first two dollar amounts in text).
+            # Do NOT use sorted/largest-first: when PO > invoice (within-budget case),
+            # largest-first assigns PO as "invoiced", inverting the variance decision.
+            amounts_ordered = [float(m.replace(",", "")) for m in _DOLLAR_PAT.findall(task_text)]
+            if len(amounts_ordered) < 2:
                 return None
-            invoiced, po = amounts[0], amounts[1]
+            invoiced, po = amounts_ordered[0], amounts_ordered[1]
 
         threshold = float(thr_m.group(1)) if thr_m else next(
             (p for p in _extract_pcts(task_text) if p < 20), 5.0
