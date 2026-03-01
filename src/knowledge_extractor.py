@@ -225,8 +225,8 @@ async def _call_haiku_extract(task_text: str, answer: str, domain: str) -> list[
     try:
         import anthropic
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-        task_snippet = task_text[:300]
-        answer_snippet = answer[:400]
+        task_snippet = task_text[:600]
+        answer_snippet = answer[:800]
 
         resp = await client.messages.create(
             model=EXTRACT_MODEL,

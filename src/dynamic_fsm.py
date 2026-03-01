@@ -250,7 +250,7 @@ async def _call_haiku_synthesizer(process_type: str, task_text: str) -> dict:
     """Call Haiku to synthesize an FSM definition. Returns fallback on any error."""
     prompt = _SYNTHESIS_PROMPT.format(
         process_type=process_type,
-        task_text=task_text[:500],  # cap task text to save tokens
+        task_text=task_text[:800],  # cap task text to save tokens
     )
 
     try:
@@ -306,7 +306,7 @@ def _enrich_with_rl(definition: dict, task_text: str, process_type: str) -> dict
         instructions["DECOMPOSE"] = (
             decompose_instr
             + f"\n\n[RL patterns for {process_type} from past tasks]\n"
-            + rl_patterns[:400]
+            + rl_patterns[:600]
         )
         enriched["state_instructions"] = instructions
         return enriched
