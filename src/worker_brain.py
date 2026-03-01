@@ -525,57 +525,47 @@ class MiniAIWorker:
         answer = ""
         tool_count = 0
         error = None
-        _brainos_handled = False
+        _brainos_handled = False  # kept for downstream guards that check this flag
 
-        try:
-            answer = await run_task(
-                message=task_text,
-                system_context=system_context,
-                on_tool_call=on_tool_call,
-                session_id=self.session_id,
-            )
-            if answer:
-                _brainos_handled = True
-            else:
-                # BrainOS returned empty — fall through to direct Claude execution
-                raise BrainOSUnavailableError("empty response from BrainOS")
-        except Exception:  # Catch ALL failures: BrainOS down, network error, empty response
-            if not self.budget.should_skip_llm:
-                try:
-                    # UCB1 bandit selects strategy based on past outcomes per process type
-                    strategy = select_strategy(fsm.process_type, task_text)
+        if not self.budget.should_skip_llm:
+            try:
+                # UCB1 bandit selects strategy based on past outcomes per process type
+                # BrainOS routing removed — execution goes directly to Claude
+                strategy = select_strategy(fsm.process_type, task_text)
 
-                    if strategy == "five_phase" or (strategy == "fsm" and await should_use_five_phase(task_text, 0)):
-                        answer, tool_count, _fq = await five_phase_execute(
-                            task_text=task_text,
-                            system_context=system_context,
-                            process_type=fsm.process_type,
-                            on_tool_call=on_tool_call,
-                            tools=self._tools,
-                        )
-                        strategy = "five_phase"
-                    else:
-                        answer, tool_count = await solve_with_claude(
-                            task_text=task_text,
-                            policy_section=policy_section,
-                            policy_result=policy_result,
-                            tools=self._tools,
-                            on_tool_call=on_tool_call,
-                            session_id=self.session_id,
-                            model=model,
-                            max_tokens=max_tokens,
-                        )
-                        # "moa" arm uses solve_with_claude + MoA post-processing (runs below).
-                        # Preserve "moa" strategy so bandit arm actually gets updated.
-                        if strategy not in ("moa",):
-                            strategy = "fsm"
-                    context["_strategy_used"] = strategy
-                except Exception as e:
-                    error = str(e)
-                    answer = f"Task failed: {error}"
-                    context["_strategy_used"] = "fsm"
-            else:
-                answer = "Token budget exhausted. Task incomplete."
+                if strategy == "five_phase":
+                    # five_phase only when UCB1 has learned it wins for this process type
+                    answer, tool_count, _fq = await five_phase_execute(
+                        task_text=task_text,
+                        system_context=system_context,
+                        process_type=fsm.process_type,
+                        on_tool_call=on_tool_call,
+                        tools=self._tools,
+                    )
+                    strategy = "five_phase"
+                else:
+                    # Default: solve_with_claude (FSM path or MoA post-processing below)
+                    answer, tool_count = await solve_with_claude(
+                        task_text=task_text,
+                        policy_section=policy_section,
+                        policy_result=policy_result,
+                        tools=self._tools,
+                        on_tool_call=on_tool_call,
+                        session_id=self.session_id,
+                        model=model,
+                        max_tokens=max_tokens,
+                    )
+                    # "moa" arm uses solve_with_claude + MoA post-processing (runs below).
+                    # Preserve "moa" strategy so bandit arm actually gets updated.
+                    if strategy not in ("moa",):
+                        strategy = "fsm"
+                context["_strategy_used"] = strategy
+            except Exception as e:
+                error = str(e)
+                answer = f"Task failed: {error}"
+                context["_strategy_used"] = "fsm"
+        else:
+            answer = "Token budget exhausted. Task incomplete."
 
         # COMPUTE math reflection gate — catch arithmetic errors before MUTATE
         # Runs a fast Haiku critique of any numeric values in the answer.
