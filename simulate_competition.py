@@ -234,8 +234,12 @@ def test_ucb1_moa_arm():
     # Now record a high-quality moa result
     record_outcome(pt, "moa", 1.0)
     moa_data = _state[pt]["moa"]
+    # General prior seeds moa at (q=0.55, n=2). After 1 seed record (q=0.5)
+    # and 1 high-quality record (q=1.0): n=4, q=0.650.
+    # Verify n grew from prior + 2 explicit records, and q > prior (0.55) confirming
+    # the high-quality outcome raised the arm's estimate.
     check("UCB1 bandit: moa arm records outcome correctly",
-          moa_data["n"] == 2 and moa_data["q"] > 0.5,
+          moa_data["n"] == 4 and moa_data["q"] > 0.55,
           f"n={moa_data['n']} q={moa_data['q']:.3f}")
 
 test_ucb1_moa_arm()
