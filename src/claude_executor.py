@@ -80,7 +80,13 @@ EXECUTION ORDER (critical for scoring):
 - If escalation is required per task policy: call escalate_*/page_* tools BEFORE notify_*/send_* tools.
 - Use EVERY available tool that is relevant to the task — incomplete tool coverage loses points.
 {process_context_block}{policy_section}{original_context_block}
-Execute the task fully and in correct order. After all actions, provide a concise answer."""
+Execute the task fully and in correct order. After all tool calls are complete, structure your final answer exactly as:
+
+## Actions Completed
+- [tool_name(entity_id)] → [status/result]
+
+## Outcome
+[Decision] for [entity_id]: [key values — amounts, dates, IDs]. Status: [final status]."""
 
     messages: list[dict] = [{"role": "user", "content": task_text}]
     tool_count = 0

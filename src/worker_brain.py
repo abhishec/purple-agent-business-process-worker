@@ -22,6 +22,7 @@ from __future__ import annotations
 import time
 import json
 import asyncio
+import re
 
 from src.claude_executor import solve_with_claude
 from src.mcp_bridge import discover_tools, call_tool
@@ -828,6 +829,53 @@ class MiniAIWorker:
                         tool_count += contract_tools
                 except Exception:
                     pass  # never block task for L2 contract retry
+
+        # L3: TOOL COVERAGE CHECK — catch partial execution where specific write tools
+        # are named in the task text but were never called.
+        # Complements L2 (L2 fires when mutation_count==0; L3 fires when mutation_count>0
+        # but specific required tools are still missing from the call record).
+        # Example: task says "call approve_expense and send_notification" — if Claude
+        # called approve_expense but not send_notification, L3 fires a targeted retry.
+        if (answer and not error and task_complexity == "full"
+                and not self.budget.should_skip_llm
+                and not (answer or "").strip().startswith('[')):
+            try:
+                # Extract potential tool-name patterns from the task text.
+                # A tool name looks like: lower_snake_case with at least one underscore.
+                _task_tool_mentions = re.findall(r'\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b', task_text)
+                # Intersect against the actual available write tools — eliminates false positives
+                _, _phase_write_tools = _split_tools_for_phases(self._tools)
+                _write_tool_names_set = {t.get("name", "") for t in _phase_write_tools}
+                _explicit_required = [t for t in _task_tool_mentions if t in _write_tool_names_set]
+                if _explicit_required:
+                    _called_writes = {m["tool"] for m in verifier._mutations}
+                    _missed = [t for t in _explicit_required if t not in _called_writes]
+                    if _missed:
+                        missed_tools_str = ", ".join(_missed[:5])
+                        coverage_prompt = (
+                            f"Task execution was incomplete. The following required tools "
+                            f"were NOT called: {missed_tools_str}\n\n"
+                            f"Data already gathered:\n{(answer or '')[:600]}\n\n"
+                            f"Original task: {task_text[:400]}\n\n"
+                            f"Call ONLY the missing tools listed above. Do NOT re-read data."
+                        )
+                        _, _cov_write_tools = _split_tools_for_phases(self._tools)
+                        coverage_answer, coverage_tc = await solve_with_claude(
+                            task_text=coverage_prompt,
+                            policy_section=policy_section,
+                            policy_result=policy_result,
+                            tools=_cov_write_tools,
+                            on_tool_call=on_tool_call,
+                            session_id=self.session_id,
+                            model=MODELS["sonnet"],
+                            max_tokens=1024,
+                            original_task_text=task_text,
+                        )
+                        if coverage_tc > 0 and coverage_answer and len(coverage_answer) > 30:
+                            answer = coverage_answer
+                            tool_count += coverage_tc
+            except Exception:
+                pass  # never block task for coverage check failure
 
         # COMPUTE math reflection gate — catch arithmetic errors before MUTATE
         # Runs a fast Haiku critique of any numeric values in the answer.
