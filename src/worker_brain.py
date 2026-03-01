@@ -64,6 +64,33 @@ from src.context_pruner import prune_case_log, prune_rl_primer                  
 from src.self_moa import numeric_moa_synthesize                                                # dual top_p MoA for numeric tasks
 
 
+def _split_tools_for_phases(tools: list) -> tuple[list, list]:
+    """
+    Split tools into (read_tools, write_tools) for two-phase execution.
+
+    read_tools  → GATHER phase: get_*/list_*/calculate_*/check_* etc. — safe, idempotent
+    write_tools → MUTATE phase: all mutation verbs + confirm_with_user
+
+    confirm_with_user goes in write_tools so it fires before mutations in Phase B
+    (it auto-confirms in benchmark mode, returns "ok" immediately).
+
+    Separation makes it structurally impossible for Claude to:
+    - Call write tools during GATHER
+    - Get distracted by more reads during MUTATE
+    """
+    read_tools: list = []
+    write_tools: list = []
+    for t in tools:
+        name = t.get("name", "")
+        if name == "confirm_with_user":
+            write_tools.append(t)        # confirm fires before mutations in Phase B
+        elif _is_write_tool(name):
+            write_tools.append(t)
+        else:
+            read_tools.append(t)
+    return read_tools, write_tools
+
+
 def _parse_policy(policy_doc: str) -> tuple[dict | None, str]:
     if not policy_doc:
         return None, ""
@@ -471,6 +498,104 @@ class MiniAIWorker:
             "task_complexity": task_complexity,     # "full" or "readonly"
         }
 
+    # ── TWO-PHASE EXECUTION ────────────────────────────────────────────────
+
+    async def _execute_two_phase(
+        self,
+        task_text: str,
+        policy_section: str,
+        policy_result: dict | None,
+        on_tool_call,
+        process_context: str,
+    ) -> tuple[str, int]:
+        """
+        State-gated two-phase execution: GATHER → MUTATE.
+
+        Phase A (GATHER): only read tools (get_*/list_*/calculate_* etc.)
+          - Claude cannot call write tools — structurally impossible
+          - Collects all entity data, amounts, statuses
+
+        Phase B (MUTATE): only write tools + confirm_with_user
+          - Claude cannot re-read data — must execute now
+          - Receives Phase A data as context
+          - Always uses Sonnet (mutations must not run on Haiku)
+
+        This eliminates the "analysis without execution" failure class at the
+        architectural level. L2 Completion Contract remains as safety net.
+        """
+        read_tools, write_tools = _split_tools_for_phases(self._tools)
+
+        # If no write tools exist, this is effectively a read-only task — single pass
+        if not write_tools:
+            gathered, tc = await solve_with_claude(
+                task_text=task_text,
+                policy_section=policy_section,
+                policy_result=policy_result,
+                tools=self._tools,
+                on_tool_call=on_tool_call,
+                session_id=self.session_id,
+                model=MODELS["sonnet"],
+                max_tokens=2048,
+                process_context=process_context,
+            )
+            return gathered or "", tc
+
+        total_tools = 0
+
+        # ── Phase A: GATHER ───────────────────────────────────────────────
+        # Read-only tool set — Claude physically cannot write during this phase.
+        gather_prompt = (
+            "PHASE 1 — GATHER ALL DATA: Use the read tools to collect EVERYTHING "
+            "needed to complete this task.\n"
+            "Retrieve: entity IDs, current statuses, amounts, balances, policy "
+            "thresholds, any history. Gather comprehensively — Phase 2 will execute "
+            "but cannot read more data.\n"
+            "Do NOT modify anything. Do NOT take any action. Gather only.\n"
+            "End with a structured data summary.\n\n"
+            f"Task: {task_text}"
+        )
+        gathered, gc = await solve_with_claude(
+            task_text=gather_prompt,
+            policy_section=policy_section,
+            policy_result=policy_result,
+            tools=read_tools if read_tools else self._tools,
+            on_tool_call=on_tool_call,
+            session_id=self.session_id,
+            model=MODELS["sonnet"],
+            max_tokens=2048,
+            process_context=process_context,
+        )
+        total_tools += gc
+
+        # ── Phase B: MUTATE ───────────────────────────────────────────────
+        # Write-only tool set + confirm_with_user — Claude cannot re-read.
+        # confirm_with_user fires before mutations, auto-confirmed in benchmark mode.
+        execute_prompt = (
+            "PHASE 2 — EXECUTE: Data has been gathered. NOW call EVERY required "
+            "action tool to complete the task.\n\n"
+            f"DATA COLLECTED IN PHASE 1:\n{(gathered or 'No data collected')[:1400]}\n\n"
+            f"ORIGINAL TASK: {task_text[:500]}\n\n"
+            "EXECUTE the required mutations. Do NOT re-read. Call the action tools "
+            "NOW and provide a complete summary of what was done and the outcomes."
+        )
+        executed, ec = await solve_with_claude(
+            task_text=execute_prompt,
+            policy_section=policy_section,
+            policy_result=policy_result,
+            tools=write_tools,
+            on_tool_call=on_tool_call,
+            session_id=self.session_id,
+            model=MODELS["sonnet"],     # hard pin — mutations must not be Haiku
+            max_tokens=2048,
+            process_context=process_context,
+        )
+        total_tools += ec
+
+        # Prefer executed answer (has mutation outcomes + summary)
+        # Fall back to gathered if Phase B returned empty
+        final = executed if (executed and len(executed) > 50) else gathered
+        return final or "", total_tools
+
     # ── EXECUTE ───────────────────────────────────────────────────────────
 
     async def _execute(self, task_text: str, context: dict) -> tuple[str, int, str | None]:
@@ -542,13 +667,18 @@ class MiniAIWorker:
             except Exception as e:
                 return {"error": str(e)}
 
+        # Model pinning: full tasks always use Sonnet regardless of token budget.
+        # Mutations need Sonnet-quality reasoning; a Haiku MUTATE call with wrong
+        # params = functional_correctness=0 regardless of how good the reads were.
+        if task_complexity == "full":
+            model = MODELS["sonnet"]
+
         answer = ""
         tool_count = 0
         error = None
         if not self.budget.should_skip_llm:
             try:
                 # UCB1 bandit selects strategy based on past outcomes per process type
-                # BrainOS routing removed — execution goes directly to Claude
                 strategy = select_strategy(fsm.process_type, task_text)
 
                 if strategy == "five_phase":
@@ -561,10 +691,11 @@ class MiniAIWorker:
                         tools=self._tools,
                     )
                     strategy = "five_phase"
-                else:
-                    # Default: solve_with_claude (FSM path or MoA post-processing below)
-                    # process_context is now passed so Claude knows the domain it's working in.
-                    # Previously this context only reached five_phase/MoA — critical routing fix.
+
+                elif strategy == "moa":
+                    # Pure-reasoning path: single call + MoA post-processing below.
+                    # moa is blocked for tool-heavy types by bandit guards, so
+                    # this branch only fires for analysis/numeric tasks with few tools.
                     answer, tool_count = await solve_with_claude(
                         task_text=task_text,
                         policy_section=policy_section,
@@ -576,10 +707,38 @@ class MiniAIWorker:
                         max_tokens=max_tokens,
                         process_context=process_context,
                     )
-                    # "moa" arm uses solve_with_claude + MoA post-processing (runs below).
-                    # Preserve "moa" strategy so bandit arm actually gets updated.
-                    if strategy not in ("moa",):
-                        strategy = "fsm"
+                    # strategy stays "moa" so bandit arm gets the right update
+
+                elif task_complexity == "full":
+                    # ── TWO-PHASE STATE-GATED EXECUTION (the architectural core) ──
+                    # Phase A: GATHER with read-only tools
+                    # Phase B: MUTATE with write-only tools
+                    # Structurally eliminates "analysis without execution" failures.
+                    answer, tool_count = await self._execute_two_phase(
+                        task_text=task_text,
+                        policy_section=policy_section,
+                        policy_result=policy_result,
+                        on_tool_call=on_tool_call,
+                        process_context=process_context,
+                    )
+                    strategy = "fsm"
+
+                else:
+                    # Read-only task (task_complexity == "readonly"): single clean pass.
+                    # No writes expected — no need for phase split.
+                    answer, tool_count = await solve_with_claude(
+                        task_text=task_text,
+                        policy_section=policy_section,
+                        policy_result=policy_result,
+                        tools=self._tools,
+                        on_tool_call=on_tool_call,
+                        session_id=self.session_id,
+                        model=model,
+                        max_tokens=max_tokens,
+                        process_context=process_context,
+                    )
+                    strategy = "fsm"
+
                 context["_strategy_used"] = strategy
             except Exception as e:
                 error = str(e)
@@ -636,26 +795,31 @@ class MiniAIWorker:
                 and not (answer or "").strip().startswith('[')):
             answer_lower = answer.lower()
             _has_analysis_lang = any(m in answer_lower for m in _L2_ANALYSIS_MARKERS)
-            write_tool_names = [t.get("name", "") for t in self._tools if _is_write_tool(t.get("name", ""))]
+            # L2 retry uses WRITE-TOOLS-ONLY — prevents Claude from re-reading
+            # data instead of executing during the retry. confirm_with_user included
+            # so policy confirmation can fire before the actual mutation.
+            _, write_tools_only = _split_tools_for_phases(self._tools)
+            write_tool_names = [t.get("name", "") for t in write_tools_only]
             if write_tool_names:
-                # Fire contract retry whether or not we detect analysis language —
-                # mutation_count == 0 on a "full" task is the definitive signal.
+                # Fire contract retry — mutation_count == 0 on a "full" task is
+                # the definitive signal. Inject current answer as gathered context
+                # so Claude knows what was already found and just needs to execute.
                 contract_prompt = (
                     f"You gathered data but did not execute the required action.\n"
-                    f"The task requires you to call a mutation/action tool.\n\n"
                     f"Available action tools: {', '.join(write_tool_names[:12])}\n\n"
+                    f"DATA ALREADY GATHERED:\n{(answer or '')[:800]}\n\n"
                     f"Original task: {task_text[:400]}\n\n"
-                    f"Do NOT re-analyze. Call the appropriate action tool NOW and confirm the outcome."
+                    f"Do NOT re-read any data. Call the required action tool NOW."
                 )
                 try:
                     contract_answer, contract_tools = await solve_with_claude(
                         task_text=contract_prompt,
                         policy_section=policy_section,
                         policy_result=policy_result,
-                        tools=self._tools,
+                        tools=write_tools_only,    # WRITE TOOLS ONLY — structural enforcement
                         on_tool_call=on_tool_call,
                         session_id=self.session_id,
-                        model=MODELS["sonnet"],   # always Sonnet for mutations
+                        model=MODELS["sonnet"],    # always Sonnet for mutations
                         max_tokens=2048,
                         original_task_text=task_text,
                     )
