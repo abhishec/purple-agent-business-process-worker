@@ -809,7 +809,7 @@ class MiniAIWorker:
                     f"You gathered data but did not execute the required action.\n"
                     f"Available action tools: {', '.join(write_tool_names[:12])}\n\n"
                     f"DATA ALREADY GATHERED:\n{(answer or '')[:800]}\n\n"
-                    f"Original task: {task_text[:400]}\n\n"
+                    f"Original task: {task_text[:800]}\n\n"
                     f"Do NOT re-read any data. Call the required action tool NOW."
                 )
                 try:
@@ -856,7 +856,7 @@ class MiniAIWorker:
                             f"Task execution was incomplete. The following required tools "
                             f"were NOT called: {missed_tools_str}\n\n"
                             f"Data already gathered:\n{(answer or '')[:600]}\n\n"
-                            f"Original task: {task_text[:400]}\n\n"
+                            f"Original task: {task_text[:800]}\n\n"
                             f"Call ONLY the missing tools listed above. Do NOT re-read data."
                         )
                         _, _cov_write_tools = _split_tools_for_phases(self._tools)

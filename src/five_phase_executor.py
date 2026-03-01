@@ -32,7 +32,7 @@ _HAIKU_MODEL  = "claude-haiku-4-5-20251001"
 _SONNET_MODEL = "claude-sonnet-4-6"
 
 _PLAN_TOKENS     = 200
-_SYNTH_TOKENS    = 1500
+_SYNTH_TOKENS    = 3000
 _ARTIFACT_TOKENS = 800
 
 _PLAN_TIMEOUT     = 10.0   # seconds

@@ -84,7 +84,7 @@ async def _call_classifier(task_text: str) -> tuple[str, float]:
         model=CLASSIFIER_MODEL,
         max_tokens=120,
         system=_CLASSIFIER_PROMPT,
-        messages=[{"role": "user", "content": task_text[:500]}],
+        messages=[{"role": "user", "content": task_text[:1500]}],
     )
     text = resp.content[0].text if resp.content else ""
     # Strip markdown fences that Haiku sometimes prepends (```json ... ```)
