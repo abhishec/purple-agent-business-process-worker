@@ -46,10 +46,24 @@ _READONLY_PATTERNS = re.compile(
 )
 
 _ACTION_PATTERNS = re.compile(
-    r'\b(approve|reject|create|update|delete|cancel|submit|send|notify|'
-    r'process|execute|run|trigger|schedule|assign|escalate|close|open|'
-    r'migrate|offboard|reconcile|pay|disburse|remediate)\b',
-    re.IGNORECASE,
+    r'''\b(
+        # Direct mutations
+        approve|reject|create|update|delete|remove|add|insert|
+        cancel|void|reverse|close|open|submit|send|post|apply|
+        assign|transfer|move|mark|set|put|save|write|record|log|
+        register|enroll|activate|deactivate|enable|disable|lock|unlock|
+        flag|escalate|resolve|complete|finish|terminate|suspend|resume|
+        refund|charge|credit|debit|pay|invoice|bill|collect|disburse|
+        book|schedule|notify|alert|dispatch|route|forward|
+        merge|split|link|unlink|attach|detach|replace|modify|change|
+        # Business process verbs that imply action
+        process|handle|execute|perform|run|manage|implement|
+        initiate|trigger|issue|generate|produce|fulfill|provision|
+        onboard|offboard|migrate|reconcile|settle|clear|adjust|
+        override|authorize|certify|validate|confirm|acknowledge|
+        remediate|remediate|revoke|reset|provision|deprovision
+    )\b''',
+    re.IGNORECASE | re.VERBOSE,
 )
 
 
