@@ -48,6 +48,54 @@ _MUTATE_KEYWORDS = (
 )
 
 
+import re as _re
+
+# ── Approval gate tool detection ─────────────────────────────────────────────
+# Tools that semantically serve as a Human-In-The-Loop approval gate.
+# These should NEVER be treated as DB-mutating writes; they're gate triggers.
+# Pattern covers all common conventions across domains:
+#   confirm_with_user          — generic benchmark convention
+#   require_customer_signoff   — SaaS / enterprise migrations
+#   request_manager_approval   — HR, procurement
+#   get_customer_approval      — commerce
+#   await_approval             — async workflows
+#   customer_signoff           — any *_signoff or signoff_* name
+#   authorize_action           — compliance workflows
+_APPROVAL_TOOL_RE = _re.compile(
+    r"^confirm_"                          # confirm_with_user, confirm_action
+    r"|signoff|sign_off"                  # *_signoff, require_customer_signoff
+    r"|^require_(?=.*(?:approv|sign))"    # require_customer_signoff, require_approval
+    r"|_approval$"                        # request_approval, get_approval
+    r"|^await_approv"                     # await_approval
+    r"|^authorize_"                       # authorize_action
+    r"|^request_.*approv"                 # request_manager_approval
+    r"|^get_.*approv",                    # get_customer_approval
+    _re.I,
+)
+
+
+def is_approval_tool(tool_name: str) -> bool:
+    """Return True if this tool is a HITL approval gate trigger (not a DB mutation)."""
+    return bool(_APPROVAL_TOOL_RE.search(tool_name.lower()))
+
+
+def find_approval_tool(tools: list[dict]) -> str | None:
+    """
+    Find the HITL approval gate tool in a task's tool set.
+    Returns the first matching tool name, or None if no approval tool is present.
+    Checked in order: exact 'confirm_with_user' first for backward compat, then patterns.
+    """
+    names = [t.get("name", "") for t in tools if isinstance(t, dict)]
+    # Backward-compat: prefer confirm_with_user if it exists
+    if "confirm_with_user" in names:
+        return "confirm_with_user"
+    # Pattern-based detection for any other approval gate tool
+    for name in names:
+        if is_approval_tool(name):
+            return name
+    return None
+
+
 def classify_tool(tool_name: str) -> str:
     """
     Returns 'read', 'compute', or 'mutate'.

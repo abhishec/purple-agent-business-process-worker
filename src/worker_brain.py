@@ -59,6 +59,7 @@ from src.dynamic_tools import (                                                 
     detect_tool_gaps_llm,                                                                     # LLM-based phase-2 gap detection
 )
 from src.mutation_verifier import MutationVerifier, _is_write_tool                           # write-track + WAL flush + LLM judge log
+from src.hitl_guard import find_approval_tool as _find_approval_tool, is_approval_tool as _is_approval_tool  # dynamic HITL gate detection
 from src.strategy_bandit import select_strategy, record_outcome as bandit_record               # UCB1 strategy bandit
 from src.compute_verifier import verify_compute_output                                         # COMPUTE math reflection gate
 from src.context_pruner import prune_case_log, prune_rl_primer                                 # context rot pruning
@@ -74,10 +75,11 @@ def _split_tools_for_phases(tools: list) -> tuple[list, list]:
     Split tools into (read_tools, write_tools) for two-phase execution.
 
     read_tools  → GATHER phase: get_*/list_*/calculate_*/check_* etc. — safe, idempotent
-    write_tools → MUTATE phase: all mutation verbs + confirm_with_user
+    write_tools → MUTATE phase: mutation verbs + the HITL approval gate tool
 
-    confirm_with_user goes in write_tools so it fires before mutations in Phase B
-    (it auto-confirms in benchmark mode, returns "ok" immediately).
+    The approval gate tool (confirm_with_user, require_customer_signoff, etc.)
+    goes in write_tools so it fires before mutations in Phase B.
+    Detection is pattern-based via is_approval_tool() — no hardcoded names needed.
 
     Separation makes it structurally impossible for Claude to:
     - Call write tools during GATHER
@@ -87,8 +89,8 @@ def _split_tools_for_phases(tools: list) -> tuple[list, list]:
     write_tools: list = []
     for t in tools:
         name = t.get("name", "")
-        if name == "confirm_with_user":
-            write_tools.append(t)        # confirm fires before mutations in Phase B
+        if _is_approval_tool(name):
+            write_tools.append(t)        # approval gate fires before mutations in Phase B
         elif _is_write_tool(name):
             write_tools.append(t)
         else:
@@ -742,26 +744,27 @@ class MiniAIWorker:
             return await _direct_call(tool_name, params)
 
         # UNIVERSAL STRUCTURAL APPROVAL GATE
-        # Tracks whether confirm_with_user has fired in this execution session.
+        # Tracks whether the HITL approval gate tool has fired in this session.
         # When seq_approval_required is True, mutation tools are BLOCKED until this
-        # flag is set. Soft prompts (directives in process_context) can be ignored by
-        # Claude; this hard gate cannot. Approach: "fail-open safe" — only enforced
-        # when (a) task requires approval AND (b) confirm_with_user tool is available.
+        # flag is set. Soft prompts can be ignored by Claude; this hard gate cannot.
+        # "fail-open safe": only enforced when approval tool is actually in the tool set.
+        #
+        # The approval tool is detected dynamically via find_approval_tool() —
+        # covers confirm_with_user, require_customer_signoff, request_manager_approval,
+        # or any other domain-specific HITL gate tool.  No hardcoded names needed.
         _approval_granted = False
-        _has_confirm_tool = any(
-            t.get("name", "") == "confirm_with_user" for t in self._tools
-        )
+        _approval_tool_name: str | None = _find_approval_tool(self._tools)
+        _has_confirm_tool = _approval_tool_name is not None
         _approval_required_gate = (
             context.get("_seq_approval_required", False) and _has_confirm_tool
         )
 
         async def _direct_call(tool_name: str, params: dict) -> dict:
             nonlocal _approval_granted
-            # confirm_with_user: call the real MCP endpoint for logging (policy scoring
-            # checks that it was called). Then return an explicit "proceed" signal so the
-            # model immediately continues to mutation tools without waiting for human input.
+            # Approval gate tool: call the real MCP endpoint for logging, then
+            # return an explicit "proceed" signal so the model continues to mutations.
             # In benchmark mode, confirmation is always auto-granted.
-            if tool_name == "confirm_with_user":
+            if tool_name == _approval_tool_name:
                 _approval_granted = True  # ← unlock the structural gate
                 try:
                     await call_tool(self._ep, tool_name, params, self.session_id)
@@ -774,19 +777,19 @@ class MiniAIWorker:
                 }
 
             # STRUCTURAL GATE: if this task requires approval, block ANY mutation
-            # tool call until confirm_with_user has been called.
+            # tool call until the approval gate tool has been called.
             # This converts a prompt-level hint into a hard enforcement contract.
-            # The error response instructs Claude exactly what to do next.
             from src.hitl_guard import classify_tool as _classify_tool
             if (_approval_required_gate
                     and not _approval_granted
                     and _classify_tool(tool_name) == "mutate"):
+                gate_tool = _approval_tool_name or "the approval gate tool"
                 return {
                     "status": "approval_required",
                     "error": (
                         f"POLICY_GATE: '{tool_name}' is a mutation tool. "
-                        "You MUST call confirm_with_user FIRST to obtain approval. "
-                        "Call confirm_with_user now, then retry this tool."
+                        f"You MUST call {gate_tool} FIRST to obtain approval. "
+                        f"Call {gate_tool} now, then retry this tool."
                     ),
                 }
 
@@ -919,8 +922,8 @@ class MiniAIWorker:
                 and not self.budget.should_skip_llm
                 and not _is_bracket_format((answer or "").strip())):
             # L2 retry uses WRITE-TOOLS-ONLY — prevents Claude from re-reading
-            # data instead of executing during the retry. confirm_with_user included
-            # so policy confirmation can fire before the actual mutation.
+            # data instead of executing during the retry. The approval gate tool is
+            # included (via _split_tools_for_phases) so it fires before mutations.
             _, write_tools_only = _split_tools_for_phases(self._tools)
             write_tool_names = [t.get("name", "") for t in write_tools_only]
             if write_tool_names:

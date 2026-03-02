@@ -82,11 +82,20 @@ Each layer fires independently. The structural gate and two-phase execution prev
 
 ## Sequence Enforcer
 
-`sequence_enforcer.py` injects an ordered tool-call directive into every task's system prompt. Seeds cover 21 process types (all FSM types + hr_leave, pto_approval, leave_approval, leave_management, airline_booking, flight_booking). Haiku synthesis handles novel types. The SequenceGraph caches sequences and updates confidence via EMA (α=0.3) from RL outcomes.
+`sequence_enforcer.py` injects an ordered tool-call directive into every task's system prompt. Seeds cover 22 process types (all FSM types + hr_leave, pto_approval, leave_approval, leave_management, airline_booking, flight_booking). Haiku synthesis handles novel types. The SequenceGraph caches sequences and updates confidence via EMA (α=0.3) from RL outcomes.
 
 Each seed describes tool **intent via prefixes** (e.g. `"log_"`, `"update_budget_"`). `_resolve_tool_hints()` expands prefixes against the actual available tool set at runtime — no hardcoded tool names in the detection logic.
 
 Approval gates (`gate: "approval"`) trigger both the directive warning AND the mechanical gate in `_direct_call()`.
+
+## Dynamic Approval Gate
+
+The approval gate is fully domain-agnostic. `hitl_guard.is_approval_tool()` detects any HITL gate tool by regex pattern — covering `confirm_with_user`, `require_customer_signoff`, `request_manager_approval`, `customer_signoff`, and all similar conventions. `find_approval_tool()` locates the gate tool at runtime from the task's actual tool set.
+
+This means no hardcoded tool names anywhere in the gate logic:
+- **Phase split**: `_split_tools_for_phases()` uses `is_approval_tool()` — approval tool always lands in Phase B
+- **Structural gate**: `_direct_call()` blocks mutations until the dynamically-resolved `_approval_tool_name` fires
+- **Tool classification**: `_is_write_tool()` excludes approval tools (they don't mutate DB state) and any tool ending with `_test`, `_report`, `_analysis`, `_audit` (analysis/compute, not mutations)
 
 ## Component Reference
 
@@ -163,8 +172,8 @@ python main.py --host 0.0.0.0 --port 9010
 # Core logic checks (no API key required — ~3 seconds)
 python simulate_competition.py        # 19 checks: math, FSM, bandit, schema, brackets
 
-# Phase 15+16 targeted checks (no API key required — ~5 seconds)
-python simulate_phase15_16.py         # 35 checks: seeds, gate, L3b, dead-code removal
+# Phase 15+16+17 targeted checks (no API key required — ~5 seconds)
+python simulate_phase15_16.py         # 64 checks: seeds, gate, L3b, dynamic approval, SaaS migration
 ```
 
 Both suites run without a live LLM or MCP server — they test deterministic logic only.

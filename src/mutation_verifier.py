@@ -60,24 +60,38 @@ _READ_PREFIXES = frozenset([
     "estimate_", "compare_", "diff_", "trace_", "watch_",
 ])
 
-# Tools explicitly excluded from write detection despite not starting with a
-# read prefix. Add any non-DB-write tools here.
-_WRITE_EXCLUSIONS = frozenset([
-    "confirm_with_user",
-])
+# Approval-gate tools are HITL triggers, not DB mutations.
+# We delegate to hitl_guard so the logic lives in one place.
+from src.hitl_guard import is_approval_tool as _is_approval_tool
+
+# Suffixes that mark a tool as analysis/compute regardless of its verb prefix.
+# Handles cases like:
+#   run_integration_compatibility_test → ends with _test  → read/compute
+#   generate_conflict_report           → ends with _report → read/compute
+_READ_SUFFIXES = (
+    "_test", "_report", "_check", "_analysis", "_assessment",
+    "_review", "_audit", "_diagnostic", "_estimate", "_forecast",
+    "_projection", "_comparison", "_simulation", "_preview",
+    "_compatibility_test", "_compatibility_check",
+)
 
 
 def _is_write_tool(tool_name: str) -> bool:
     """
     Return True if the tool name represents a DB-mutating operation.
 
-    Logic: anything NOT starting with a known READ prefix is a write.
-    This catches all novel/domain-specific write verbs without enumeration.
+    Logic: anything NOT starting with a known READ prefix (or ending with a
+    known READ suffix) is a write.  Approval-gate tools are also excluded —
+    they are HITL triggers, not DB mutations.
     """
     name = tool_name.lower().strip()
 
-    # Explicit non-write tools
-    if name in _WRITE_EXCLUSIONS:
+    # Approval gate tools are never writes (they don't mutate DB state)
+    if _is_approval_tool(name):
+        return False
+
+    # Tools ending with analysis/report/test suffixes are compute, not writes
+    if any(name.endswith(s) for s in _READ_SUFFIXES):
         return False
 
     # If it starts with any read prefix → not a write

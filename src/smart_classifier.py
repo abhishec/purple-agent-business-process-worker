@@ -117,7 +117,9 @@ def _keyword_fallback(task_text: str) -> str:
         "sla_breach":             ["sla", "service level", "uptime breach", "penalty", "credit"],
         "month_end_close":        ["month-end", "month end", "close", "p&l", "financial close"],
         "ar_collections":         ["accounts receivable", "overdue", "collection", "aging"],
-        "subscription_migration": ["migrate", "downgrade", "upgrade", "plan change"],
+        "subscription_migration": ["migrate", "migration", "downgrade", "upgrade", "plan change",
+                                   "plan migration", "saas migration", "subscription migration",
+                                   "require_customer_signoff", "customer signoff", "enterprise migration"],
         "payroll":                ["payroll", "salary", "pay run", "wages"],
     }
     text = task_text.lower()

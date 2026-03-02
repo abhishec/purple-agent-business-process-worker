@@ -1,7 +1,7 @@
 """
-Phase 15 + 16 targeted tests.
-Tests the three Phase 15 fixes and three Phase 16 upgrades without needing
-a live LLM or MCP server — all logic-level checks.
+Phase 15 + 16 + 17 targeted tests.
+Tests the three Phase 15 fixes, three Phase 16 upgrades, and Phase 17
+scalable approval gate + SaaS migration fixes — all without a live LLM or MCP server.
 """
 import asyncio, sys, os
 os.chdir("/tmp/purple-agent")
@@ -198,6 +198,131 @@ check("fsm_runner: long task returns 'full' even with readonly signal",
       "full")
 
 # ══════════════════════════════════════════════════════════════════════════════
+# PHASE 17 — Scalable approval gate + SaaS migration (task_09 fix)
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n── Phase 17: Scalable approval gate + SaaS migration ───────────────────")
+from src.hitl_guard import is_approval_tool, find_approval_tool
+from src.mutation_verifier import _is_write_tool
+
+# 1. is_approval_tool patterns
+check("is_approval_tool: confirm_with_user → True",
+      is_approval_tool("confirm_with_user"), "got=True")
+check("is_approval_tool: require_customer_signoff → True",
+      is_approval_tool("require_customer_signoff"), "got=True")
+check("is_approval_tool: request_manager_approval → True",
+      is_approval_tool("request_manager_approval"), "got=True")
+check("is_approval_tool: customer_signoff → True",
+      is_approval_tool("customer_signoff"), "got=True")
+check("is_approval_tool: proceed_migration → False (it's a mutation, not a gate)",
+      not is_approval_tool("proceed_migration"), "got=False")
+check("is_approval_tool: get_employee → False",
+      not is_approval_tool("get_employee"), "got=False")
+check("is_approval_tool: approve_leave → False (executes approval, not a gate)",
+      not is_approval_tool("approve_leave"), "got=False")
+
+# 2. find_approval_tool: dynamic lookup
+tools_with_require = [{"name": "get_subscription"}, {"name": "require_customer_signoff"},
+                      {"name": "proceed_migration"}]
+tools_with_confirm = [{"name": "get_employee"}, {"name": "confirm_with_user"},
+                      {"name": "update_leave"}]
+tools_no_approval  = [{"name": "get_employee"}, {"name": "proceed_migration"}]
+
+check("find_approval_tool: finds require_customer_signoff",
+      find_approval_tool(tools_with_require) == "require_customer_signoff",
+      f"got={find_approval_tool(tools_with_require)}")
+check("find_approval_tool: prefers confirm_with_user (backward compat)",
+      find_approval_tool(tools_with_confirm) == "confirm_with_user",
+      f"got={find_approval_tool(tools_with_confirm)}")
+check("find_approval_tool: returns None when no approval tool present",
+      find_approval_tool(tools_no_approval) is None,
+      f"got={find_approval_tool(tools_no_approval)}")
+
+# 3. _is_write_tool: read-suffix detection + approval gate exclusion
+check("_is_write_tool: run_integration_compatibility_test → False (ends with _test)",
+      not _is_write_tool("run_integration_compatibility_test"),
+      f"got={_is_write_tool('run_integration_compatibility_test')}")
+check("_is_write_tool: generate_conflict_report → False (ends with _report)",
+      not _is_write_tool("generate_conflict_report"),
+      f"got={_is_write_tool('generate_conflict_report')}")
+check("_is_write_tool: require_customer_signoff → False (approval gate, not a DB write)",
+      not _is_write_tool("require_customer_signoff"),
+      f"got={_is_write_tool('require_customer_signoff')}")
+check("_is_write_tool: proceed_migration → True (still a real mutation)",
+      _is_write_tool("proceed_migration"),
+      f"got={_is_write_tool('proceed_migration')}")
+check("_is_write_tool: initiate_data_export → True (mutation)",
+      _is_write_tool("initiate_data_export"),
+      f"got={_is_write_tool('initiate_data_export')}")
+check("_is_write_tool: calculate_prorated_billing → False (calculate_ read prefix)",
+      not _is_write_tool("calculate_prorated_billing"),
+      f"got={_is_write_tool('calculate_prorated_billing')}")
+
+# 4. subscription_migration seed: updated for task_09
+sm = _SEED_SEQUENCES["subscription_migration"]
+check("subscription_migration: 6 steps (updated from 5)",
+      len(sm["steps"]) == 6,
+      f"steps={len(sm['steps'])}")
+step4_hints = sm["steps"][3]["tool_hints"]
+check("subscription_migration step4: require_customer_signoff in hints",
+      "require_customer_signoff" in step4_hints,
+      f"hints={step4_hints}")
+check("subscription_migration step4: gate=approval",
+      sm["steps"][3].get("gate") == "approval",
+      f"gate={sm['steps'][3].get('gate')}")
+step2_hints = sm["steps"][1]["tool_hints"]
+check("subscription_migration step2: run_integration_compatibility_test in hints",
+      "run_integration_compatibility_test" in step2_hints,
+      f"hints={step2_hints}")
+step5_hints = sm["steps"][4]["tool_hints"]
+check("subscription_migration step5: proceed_migration in hints",
+      "proceed_migration" in step5_hints,
+      f"hints={step5_hints}")
+
+# 5. smart_classifier maps saas migration keywords
+from src.smart_classifier import _keyword_fallback
+check("smart_classifier: 'saas migration' → subscription_migration",
+      _keyword_fallback("Process SaaS migration for enterprise customer") == "subscription_migration",
+      f"got={_keyword_fallback('Process SaaS migration for enterprise customer')}")
+
+# 6. worker_brain: _split_tools_for_phases puts require_customer_signoff in write_tools
+from src.worker_brain import _split_tools_for_phases
+task09_tools = [
+    {"name": "get_subscription"}, {"name": "get_current_features"},
+    {"name": "get_new_plan_features"}, {"name": "generate_conflict_report"},
+    {"name": "initiate_data_export"}, {"name": "require_customer_signoff"},
+    {"name": "proceed_migration"}, {"name": "pause_migration"},
+    {"name": "calculate_export_files"}, {"name": "run_integration_compatibility_test"},
+    {"name": "calculate_prorated_billing"}, {"name": "notify_enterprise_team"},
+]
+read_t, write_t = _split_tools_for_phases(task09_tools)
+read_names  = {t["name"] for t in read_t}
+write_names = {t["name"] for t in write_t}
+check("_split_tools_for_phases: require_customer_signoff → write_tools (approval gate)",
+      "require_customer_signoff" in write_names,
+      f"write={sorted(write_names)}")
+check("_split_tools_for_phases: run_integration_compatibility_test → read_tools (ends _test)",
+      "run_integration_compatibility_test" in read_names,
+      f"read has it={('run_integration_compatibility_test' in read_names)}")
+check("_split_tools_for_phases: generate_conflict_report → read_tools (ends _report)",
+      "generate_conflict_report" in read_names,
+      f"read has it={('generate_conflict_report' in read_names)}")
+check("_split_tools_for_phases: proceed_migration → write_tools (real mutation)",
+      "proceed_migration" in write_names,
+      f"write has it={('proceed_migration' in write_names)}")
+
+# 7. worker_brain: dynamic _approval_tool_name logic (source-level)
+wb_src = open("src/worker_brain.py").read()
+check("worker_brain: _find_approval_tool used for gate (not hardcoded)",
+      "_find_approval_tool" in wb_src,
+      "found" if "_find_approval_tool" in wb_src else "MISSING — still hardcoded")
+check("worker_brain: tool_name == _approval_tool_name (dynamic check)",
+      "tool_name == _approval_tool_name" in wb_src,
+      "found" if "tool_name == _approval_tool_name" in wb_src else "MISSING")
+check("worker_brain: _has_confirm_tool uses _approval_tool_name",
+      "_approval_tool_name is not None" in wb_src,
+      "found" if "_approval_tool_name is not None" in wb_src else "MISSING")
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
 print("\n" + "="*60)
@@ -205,7 +330,7 @@ passed = sum(1 for _, ok, _ in results if ok)
 total = len(results)
 print(f"FINAL: {passed}/{total} checks passed")
 if passed == total:
-    print("ALL PHASE 15+16 CHECKS PASS ✅")
+    print("ALL PHASE 15+16+17 CHECKS PASS ✅")
 else:
     print("FAILURES:")
     for name, ok, detail in results:
