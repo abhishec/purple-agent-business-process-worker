@@ -538,6 +538,7 @@ class MiniAIWorker:
         # Cached per process_type in sequence_graph.json — zero LLM after first call.
         tool_names_for_seq = [t.get("name", "") for t in self._tools]
         seq_approval_required = False
+        _local_seq_hint: dict | None = None
         try:
             seq_hint = await build_sequence_hint(
                 task_text=task_text,
@@ -548,6 +549,7 @@ class MiniAIWorker:
             if seq_hint:
                 process_context_parts.append(seq_hint["directive"])
                 seq_approval_required = seq_hint.get("approval_required", False)
+                _local_seq_hint = seq_hint  # stored for L3b sequence coverage check
         except Exception:
             pass  # sequence hint is best-effort; never block execution
 
@@ -592,6 +594,7 @@ class MiniAIWorker:
             "finance_ctx": finance_ctx,   # stored for REFLECT accuracy check
             "task_complexity": task_complexity,     # "full" or "readonly"
             "_seq_approval_required": seq_approval_required,  # sequence enforcer signal
+            "_seq_hint": _local_seq_hint,           # for L3b sequence coverage check
         }
 
     # ── TWO-PHASE EXECUTION ────────────────────────────────────────────────
@@ -978,6 +981,65 @@ class MiniAIWorker:
                             tool_count += coverage_tc
             except Exception:
                 pass  # never block task for coverage check failure
+
+        # L3b: SEQUENCE COVERAGE CHECK — catch missing required downstream steps.
+        # Complements L3 (which checks task_text mentions) by checking process-type
+        # required steps from the seq_hint regardless of whether they appear in task_text.
+        # Targets task_27-style failures: agent calls approve_expense but skips
+        # log_audit_trail and update_budget_allocation because those aren't in the task text.
+        # Only fires when mutation_count > 0 (L2 already handles mutation_count==0).
+        # Only checks exact-name tool hints (not prefix hints like "log_") to avoid
+        # false positives. Prefix hints expand via _resolve_tool_hints at directive time.
+        _seq_hint_ctx = context.get("_seq_hint")
+        if (_seq_hint_ctx and answer and not error and task_complexity == "full"
+                and verifier.mutation_count > 0
+                and not self.budget.should_skip_llm
+                and not _is_bracket_format((answer or "").strip())):
+            try:
+                _seq_steps = _seq_hint_ctx.get("steps", [])
+                _, _l3b_write_tools = _split_tools_for_phases(self._tools)
+                _l3b_write_names = {t.get("name", "") for t in _l3b_write_tools}
+                _called_muts = {m["tool"] for m in verifier._mutations}
+
+                # Collect required non-approval write steps that have exact-name tool hints
+                _seq_req_missed: list[str] = []
+                for step in _seq_steps:
+                    if not step.get("required") or step.get("gate") == "approval":
+                        continue
+                    for hint in step.get("tool_hints", []):
+                        # Skip prefix hints (e.g. "approve_", "log_") — too ambiguous
+                        if hint.endswith("_"):
+                            continue
+                        if hint in _l3b_write_names and hint not in _called_muts:
+                            _seq_req_missed.append(hint)
+                            break  # one representative miss per step is enough
+
+                if _seq_req_missed:
+                    missed_str = ", ".join(_seq_req_missed[:5])
+                    seq_cov_prompt = (
+                        f"Task execution was incomplete. These required process steps "
+                        f"were NOT called:\nMissing tools: {missed_str}\n\n"
+                        f"Work completed so far:\n{(answer or '')[:1000]}\n\n"
+                        f"Original task: {task_text[:1000]}\n\n"
+                        f"Call ONLY the missing tools listed above. Do NOT re-read any data."
+                    )
+                    _, _l3b_exec_tools = _split_tools_for_phases(self._tools)
+                    l3b_answer, l3b_tc = await solve_with_claude(
+                        task_text=seq_cov_prompt,
+                        policy_section=policy_section,
+                        policy_result=policy_result,
+                        tools=_l3b_exec_tools,
+                        on_tool_call=on_tool_call,
+                        session_id=self.session_id,
+                        model=MODELS["sonnet"],
+                        max_tokens=1024,
+                        original_task_text=task_text,
+                    )
+                    if l3b_tc > 0 and l3b_answer and len(l3b_answer) > 30:
+                        answer = l3b_answer
+                        tool_count += l3b_tc
+            except Exception:
+                pass  # never block task for L3b sequence coverage failure
 
         # COMPUTE math reflection gate — catch arithmetic errors before MUTATE
         # Runs a fast Haiku critique of any numeric values in the answer.
