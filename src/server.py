@@ -13,6 +13,85 @@ from src.dynamic_fsm import get_synthesis_stats
 from src.dynamic_tools import seed_amortization_tool, get_tool_registry_stats
 from src.strategy_bandit import get_stats as get_bandit_stats, ensure_warmed as bandit_warm
 from src.report_analyzer import analyze_and_save, load_intelligence
+from src.config import ANTHROPIC_API_KEY, FALLBACK_MODEL
+
+# ── Tau2-bench multi-turn session state ───────────────────────────────────────
+# The tau2 evaluator does NOT use MCP. Instead it embeds tool schemas as JSON
+# inside the first A2A message text, and expects our agent to respond with JSON
+# action objects: {"name": "tool_name", "arguments": {...}} each turn.
+# We maintain per-context conversation history so Claude accumulates full context.
+_tau2_sessions: dict[str, list[dict]] = {}  # contextId → LLM message history
+
+TAU2_SYSTEM_PROMPT = """You are an expert airline customer service agent working inside the tau2-bench evaluation framework.
+
+CRITICAL RESPONSE FORMAT — you MUST respond with ONLY a valid JSON object, no other text:
+
+To call a tool:
+{"name": "tool_name", "arguments": {"param1": "value1"}}
+
+To reply to the customer:
+{"name": "respond", "arguments": {"content": "Your message to the customer"}}
+
+WORKFLOW:
+1. The FIRST message you receive contains: the airline policy, available tool definitions (as JSON schemas), and the customer's opening message.
+2. Read the tool schemas carefully. Use them to look up data and take actions.
+3. ALWAYS call lookup tools first (e.g. get_reservation_details, search_reservations) before taking action.
+4. After getting tool results, call action tools (cancel_reservation, change_reservation, etc.) if the customer wants an action.
+5. Only use "respond" to communicate with the customer. Never include explanatory text outside the JSON.
+6. Subsequent messages will be either tool results ("Tool 'X' result: {...}") or the customer's next message.
+
+KEY RULES:
+- Call ONE tool at a time per turn.
+- Always verify reservation details before cancelling or modifying.
+- If the customer has the reservation code, look it up immediately — do not ask for information you already have.
+- Be decisive: once you have the data, take the action the customer requested.
+- Never say "I cannot access" — you CAN access the tools listed in the first message."""
+
+
+def _is_tau2_format(text: str) -> bool:
+    """Detect tau2-bench conversation: tool schemas are embedded as JSON in message text."""
+    return (
+        "Here's a list of tools you can use" in text
+        or "here's a list of tools you can use" in text.lower()
+        or ('"type": "function"' in text and '"name": "respond"' in text)
+    )
+
+
+async def _handle_tau2_turn(context_id: str, message_text: str) -> str:
+    """Handle one tau2 multi-turn conversation step. Returns JSON action string."""
+    import anthropic as _anthropic
+
+    if context_id not in _tau2_sessions:
+        _tau2_sessions[context_id] = []
+
+    _tau2_sessions[context_id].append({"role": "user", "content": message_text})
+
+    client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    try:
+        response = await client.messages.create(
+            model=FALLBACK_MODEL,
+            max_tokens=1024,
+            system=TAU2_SYSTEM_PROMPT,
+            messages=_tau2_sessions[context_id],
+        )
+        answer = response.content[0].text.strip() if response.content else ""
+    except Exception as e:
+        answer = json.dumps({"name": "respond", "arguments": {"content": f"I apologize, I encountered an error. Please try again. ({e})"}})
+
+    # Ensure the answer is valid JSON (fall back to respond action if not)
+    try:
+        parsed = json.loads(answer)
+        # Validate it has the right structure
+        if "name" not in parsed:
+            raise ValueError("missing name")
+        answer = json.dumps(parsed)  # normalise whitespace
+    except Exception:
+        # Claude returned non-JSON text — wrap it as a respond action
+        answer = json.dumps({"name": "respond", "arguments": {"content": answer}})
+
+    _tau2_sessions[context_id].append({"role": "assistant", "content": answer})
+    print(f"[tau2] ctx={context_id[:8]} turn={len(_tau2_sessions[context_id])//2} answer={answer[:120]}", flush=True)
+    return answer
 
 app = FastAPI(title="BrainOS Purple Agent", version="5.0.0")
 
@@ -128,18 +207,23 @@ async def a2a_handler(request: Request):
         session_id = metadata.get("session_id", task_id)
 
     try:
-        answer = await run_worker(
-            task_text=task_text,
-            policy_doc=policy_doc,
-            tools_endpoint=tools_endpoint,
-            task_id=task_id,
-            session_id=session_id,
-        )
-        # Strip internal BrainOS metadata tags before sending to external evaluators.
-        # Tags like "[Process: General | Policy: N/A]" are for internal scoring pipelines
-        # and confuse A2A user simulators in tau2-bench conversational evaluations.
-        import re as _re
-        answer = _re.sub(r'\n*\[Process:[^\]]*\]\s*$', '', answer.rstrip(), flags=_re.IGNORECASE)
+        # Route tau2-bench conversations to the stateful multi-turn handler.
+        # Tau2 embeds tool schemas in the first message text instead of using MCP.
+        # Subsequent turns in the same context_id are also tau2 (session already active).
+        if context_id in _tau2_sessions or _is_tau2_format(task_text):
+            print(f"[tau2] routing context_id={context_id[:8]} to tau2 handler", flush=True)
+            answer = await _handle_tau2_turn(context_id, task_text)
+        else:
+            answer = await run_worker(
+                task_text=task_text,
+                policy_doc=policy_doc,
+                tools_endpoint=tools_endpoint,
+                task_id=task_id,
+                session_id=session_id,
+            )
+            # Strip internal BrainOS metadata tags before sending to external evaluators.
+            import re as _re
+            answer = _re.sub(r'\n*\[Process:[^\]]*\]\s*$', '', answer.rstrip(), flags=_re.IGNORECASE)
     except Exception as exc:
         # Return JSON-RPC error (not 500 HTML) so benchmark evaluator can parse it
         return JSONResponse({
