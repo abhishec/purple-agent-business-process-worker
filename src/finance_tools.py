@@ -99,8 +99,12 @@ def build_finance_context(task_text: str, process_type: str) -> str:
                 conf_note = get_confidence_annotation(process_type, "sla_credit")
                 lines.append(result + conf_note)
 
-    # ── Proration (subscription_migration, ar_collections, month_end_close) ───
-    if process_type in ("subscription_migration", "ar_collections", "month_end_close"):
+    # ── Proration (subscription_migration, ar_collections, month_end_close,
+    #              dispute_resolution, invoice_reconciliation) ──────────────────
+    # dispute_resolution: partial credit = original × (days_remaining / billing_cycle)
+    # invoice_reconciliation: prorated invoice matching on partial periods
+    if process_type in ("subscription_migration", "ar_collections", "month_end_close",
+                        "dispute_resolution", "invoice_reconciliation"):
         drift = is_drift_detected(process_type, "proration")
         if drift:
             lines.append(get_drift_warning("proration"))
@@ -109,6 +113,14 @@ def build_finance_context(task_text: str, process_type: str) -> str:
             if result:
                 conf_note = get_confidence_annotation(process_type, "proration")
                 lines.append(result + conf_note)
+
+    # ── Dispute credit (dispute_resolution only) ──────────────────────────────
+    # Explicit partial credit formula to prevent arith=15/0 failures.
+    # Shows credit = original × (days_remaining / billing_cycle) with ambiguity detection.
+    if process_type == "dispute_resolution":
+        dispute_credit = _compute_dispute_credit(task_text)
+        if dispute_credit:
+            lines.append(dispute_credit)
 
     if not lines:
         return ""
@@ -219,6 +231,68 @@ def _compute_proration(task_text: str) -> str | None:
                 f"= ${remaining:,.2f} remaining."
             )
         return None
+    except Exception:
+        return None
+
+
+def _compute_dispute_credit(task_text: str) -> str | None:
+    """
+    Compute partial credit for dispute/chargeback tasks.
+    Handles both "days remaining" and "days used" phrasing, and N-day vs N days.
+    Formula: credit = original_amount × (days_remaining / billing_cycle_days)
+    """
+    try:
+        amounts = _extract_dollars(task_text)
+        if not amounts:
+            return None
+
+        original = amounts[0]
+        # Match both "30 days" and "90-day" and "30-day" patterns
+        days = [int(d) for d in _re.findall(r"(\d+)[-\s]+days?", task_text, _re.IGNORECASE)]
+        if len(days) < 2:
+            return None
+
+        # Find the billing cycle length (the larger number) and the period number (smaller)
+        total_d = max(days)
+        partial_d = min(days)
+        if total_d == partial_d:
+            return None
+
+        text_lower = task_text.lower()
+
+        # Detect "remaining" context — the partial_d is days still unused
+        has_remaining = bool(_re.search(
+            r"(\d+)[-\s]+days?\s+(remaining|left|unused|unserved|of\s+service\s+remaining)"
+            r"|(remaining|unused|left)\s+(\d+)[-\s]+days?",
+            text_lower,
+        ))
+        # Detect "used/elapsed" context — the partial_d is days already consumed
+        has_used = bool(_re.search(
+            r"(\d+)[-\s]+days?\s+(used|into|elapsed|completed|ago|of\s+service\s+used)"
+            r"|(used|elapsed|completed)\s+(\d+)[-\s]+days?",
+            text_lower,
+        ))
+
+        if has_remaining and not has_used:
+            days_remaining = partial_d
+        elif has_used and not has_remaining:
+            days_remaining = total_d - partial_d
+        else:
+            # Ambiguous — show both interpretations so Claude can pick the right one
+            credit_a = round(original * partial_d / total_d, 2)
+            credit_b = round(original * (total_d - partial_d) / total_d, 2)
+            return (
+                f"Dispute Credit (formula: original × days_remaining / billing_cycle): "
+                f"If {partial_d} = days REMAINING → credit = ${credit_a:,.2f}. "
+                f"If {partial_d} = days USED → credit = ${credit_b:,.2f}. "
+                f"Read the task to determine which applies."
+            )
+
+        credit = round(original * days_remaining / total_d, 2)
+        return (
+            f"Dispute Credit: ${original:,.2f} × {days_remaining}/{total_d} days remaining "
+            f"= ${credit:,.2f} (formula: original_amount × days_remaining / billing_cycle_days)."
+        )
     except Exception:
         return None
 
