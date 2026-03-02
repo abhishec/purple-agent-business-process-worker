@@ -822,7 +822,7 @@ def finance_loan_amortization(principal, annual_rate, months):
             "monthly_payment": float(monthly),
             "total_payments": float(monthly * Decimal(str(n))),
             "total_interest": float(total_interest),
-            "schedule": schedule[:6] + (["..."] if n > 12 else schedule[6:]),
+            "schedule": schedule if n <= 12 else schedule[:12],
         },
     }
 '''.strip()
