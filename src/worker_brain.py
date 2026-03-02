@@ -36,7 +36,7 @@ from src.session_context import (
 )
 from src.fsm_runner import FSMRunner, detect_task_complexity
 from src.privacy_guard import check_privacy
-from src.token_budget import TokenBudget, format_competition_answer, MODELS
+from src.token_budget import TokenBudget, format_competition_answer, MODELS, _is_bracket_format
 from src.schema_adapter import resilient_tool_call
 from src.hitl_guard import check_approval_gate, seed_tool_type_cache  # Gap 1
 from src.paginated_tools import paginated_fetch          # Gap 2
@@ -793,7 +793,7 @@ class MiniAIWorker:
                 and verifier.mutation_count == 0  # but made ZERO mutations
                 and task_complexity == "full"    # task requires action (not readonly)
                 and not self.budget.should_skip_llm
-                and not (answer or "").strip().startswith('[')):
+                and not _is_bracket_format((answer or "").strip())):
             answer_lower = answer.lower()
             _has_analysis_lang = any(m in answer_lower for m in _L2_ANALYSIS_MARKERS)
             # L2 retry uses WRITE-TOOLS-ONLY — prevents Claude from re-reading
@@ -838,7 +838,7 @@ class MiniAIWorker:
         # called approve_expense but not send_notification, L3 fires a targeted retry.
         if (answer and not error and task_complexity == "full"
                 and not self.budget.should_skip_llm
-                and not (answer or "").strip().startswith('[')):
+                and not _is_bracket_format((answer or "").strip())):
             try:
                 # Extract potential tool-name patterns from the task text.
                 # A tool name looks like: lower_snake_case with at least one underscore.
@@ -1052,7 +1052,7 @@ class MiniAIWorker:
         # This ensures MoA, COMPUTE correction, and reflection passes cannot discard it.
         # The log forces SQLite WAL checkpoint via read-backs and provides LLM judge evidence.
         # Never append to bracket-format answers (exact_match targets) — would corrupt score.
-        if verifier.mutation_count > 0 and not (answer or "").strip().startswith('['):
+        if verifier.mutation_count > 0 and not _is_bracket_format((answer or "").strip()):
             answer = (answer or "") + verifier.build_verification_section()
 
         # Store mutation verification state in context for REFLECT phase RL scoring.
