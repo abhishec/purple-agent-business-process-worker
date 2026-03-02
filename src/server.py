@@ -129,6 +129,32 @@ async def _handle_tau2_turn(context_id: str, message_text: str) -> str:
                         parsed = inner_parsed  # use the inner action directly
                 except Exception:
                     pass  # content is just text starting with '{'
+        # Booking pivot guardrail: if a booking is pending (detected from first user message)
+        # but the respond() content doesn't include a booking question, inject one.
+        # This guarantees the agent doesn't "forget" the booking while handling digressions.
+        if parsed.get("name") == "respond" and len(_tau2_sessions[context_id]) > 2:
+            _content = parsed.get("arguments", {}).get("content", "")
+            _first_msg = _tau2_sessions[context_id][0].get("content", "")
+            _booking_kw = ("book a flight", "book flight", "i want to book", "looking to book",
+                           "to new york", "to nyc", "fly to", "sfo", "san francisco to")
+            if isinstance(_first_msg, str) and any(kw in _first_msg.lower() for kw in _booking_kw):
+                _already_booked = any(
+                    isinstance(m.get("content"), str) and "book_reservation" in m.get("content", "")
+                    for m in _tau2_sessions[context_id] if m.get("role") == "assistant"
+                )
+                _has_pivot = any(
+                    q in _content.lower()
+                    for q in ("what date", "departure date", "when would you like to travel",
+                              "when do you want to fly", "when are you looking", "what day",
+                              "let me book", "book your flight", "for your booking",
+                              "would you like to travel", "looking to travel", "when do you",
+                              "what cabin", "which cabin")
+                )
+                if not _already_booked and not _has_pivot:
+                    _pivot = " What date would you like to travel and what cabin class would you prefer for your booking?"
+                    parsed["arguments"]["content"] = _content.rstrip() + _pivot
+                    print(f"[tau2] booking pivot injected for ctx={context_id[:8]}", flush=True)
+
         answer = json.dumps(parsed)  # normalise whitespace
     except Exception:
         # Claude returned non-JSON text — wrap it as a respond action
