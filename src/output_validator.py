@@ -11,6 +11,7 @@ Zero API cost — pure string/regex matching.
 """
 from __future__ import annotations
 import re
+from src.token_budget import _is_bracket_format
 
 # ── Per-process expected output fields ───────────────────────────────────────
 # Format: list of (field_name, patterns_that_match_it)
@@ -139,7 +140,8 @@ def validate_output(answer: str, process_type: str) -> dict:
     """
     # Bracket-format answers are exact_match targets — field validation doesn't apply.
     # Running improvement passes on them would corrupt the bracket format.
-    if answer.strip().startswith('['):
+    # Use strict JSON-array check (not startswith('[')) per token_budget.py guidance.
+    if _is_bracket_format(answer.strip()):
         return {"valid": True, "coverage": 1.0, "present": [], "missing": [], "score": 1.0}
 
     answer_lower = answer.lower()

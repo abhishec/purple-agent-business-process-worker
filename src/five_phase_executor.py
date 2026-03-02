@@ -25,6 +25,7 @@ import anthropic
 
 from src.config import ANTHROPIC_API_KEY, FALLBACK_MODEL
 from src.knowledge_extractor import extract_and_store
+from src.token_budget import _is_bracket_format
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -244,8 +245,9 @@ async def _phase_artifact(synthesis: str, task_text: str) -> str:
     if not synthesis:
         return synthesis
 
-    # Bracket-format synthesis = exact_match target — never reformat via artifact phase
-    if synthesis.strip().startswith('['):
+    # Bracket-format synthesis = exact_match target — never reformat via artifact phase.
+    # Use strict JSON-array check (not startswith('[')) per token_budget.py guidance.
+    if _is_bracket_format(synthesis.strip()):
         return synthesis
 
     artifact_system = (
