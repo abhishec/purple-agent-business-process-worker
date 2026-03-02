@@ -144,16 +144,19 @@ async def a2a_handler(request: Request):
         })
 
     if method == "message/send":
-        # A2A SDK v0.2.x response: return a Task object with kind discriminator
+        # A2A SDK v0.2.x response: return a Message object.
+        # - kind="message" discriminates Message vs Task in the union
+        # - Parts use "kind" (not "type") in the newer SDK
         return JSONResponse({
             "jsonrpc": "2.0",
             "id": jsonrpc_id,
             "result": {
-                "kind": "task",
-                "id": task_id,
+                "kind": "message",
+                "messageId": str(uuid.uuid4()),
+                "role": "agent",
+                "parts": [{"kind": "text", "text": answer}],
                 "contextId": context_id,
-                "status": {"state": "completed"},
-                "artifacts": [{"parts": [{"type": "text", "text": answer}]}],
+                "taskId": task_id,
             },
         })
     else:
