@@ -91,22 +91,41 @@ async def a2a_handler(request: Request):
 
     # JSON-RPC 2.0: correlation id lives at top level of request
     jsonrpc_id = body.get("id")
+    method = body.get("method", "")
 
-    if body.get("method") != "tasks/send":
+    # Accept both old (tasks/send) and new (message/send) A2A SDK methods
+    if method not in ("tasks/send", "message/send"):
         return JSONResponse({
             "jsonrpc": "2.0", "id": jsonrpc_id,
             "error": {"code": -32601, "message": "Method not found"},
         })
 
     params = body.get("params", {})
-    task_id = params.get("id", str(uuid.uuid4()))
-    message = params.get("message", {})
-    metadata = params.get("metadata", {})
 
-    task_text = "".join(p.get("text", "") for p in message.get("parts", []))
-    policy_doc = metadata.get("policy_doc", "")
-    tools_endpoint = metadata.get("tools_endpoint", "")
-    session_id = metadata.get("session_id", task_id)
+    if method == "message/send":
+        # A2A SDK v0.2.x: params.message contains the message object
+        message = params.get("message", {})
+        task_id = message.get("taskId", params.get("id", str(uuid.uuid4())))
+        context_id = message.get("contextId", task_id)
+        session_id = context_id
+        # Parts in newer SDK have a "type" field
+        task_text = "".join(
+            p.get("text", "") for p in message.get("parts", [])
+            if p.get("type", "text") == "text"
+        )
+        metadata = params.get("metadata", {})
+        policy_doc = metadata.get("policy_doc", "")
+        tools_endpoint = metadata.get("tools_endpoint", "")
+    else:
+        # Legacy tasks/send format
+        task_id = params.get("id", str(uuid.uuid4()))
+        context_id = task_id
+        message = params.get("message", {})
+        metadata = params.get("metadata", {})
+        task_text = "".join(p.get("text", "") for p in message.get("parts", []))
+        policy_doc = metadata.get("policy_doc", "")
+        tools_endpoint = metadata.get("tools_endpoint", "")
+        session_id = metadata.get("session_id", task_id)
 
     try:
         answer = await run_worker(
@@ -124,15 +143,29 @@ async def a2a_handler(request: Request):
             "error": {"code": -32603, "message": f"Internal error: {exc}", "data": None},
         })
 
-    return JSONResponse({
-        "jsonrpc": "2.0",
-        "id": jsonrpc_id,   # required by JSON-RPC 2.0 spec
-        "result": {
-            "id": task_id,
-            "status": {"state": "completed"},
-            "artifacts": [{"parts": [{"text": answer}]}],
-        },
-    })
+    if method == "message/send":
+        # A2A SDK v0.2.x response: return a Task object with kind discriminator
+        return JSONResponse({
+            "jsonrpc": "2.0",
+            "id": jsonrpc_id,
+            "result": {
+                "kind": "task",
+                "id": task_id,
+                "contextId": context_id,
+                "status": {"state": "completed"},
+                "artifacts": [{"parts": [{"type": "text", "text": answer}]}],
+            },
+        })
+    else:
+        return JSONResponse({
+            "jsonrpc": "2.0",
+            "id": jsonrpc_id,   # required by JSON-RPC 2.0 spec
+            "result": {
+                "id": task_id,
+                "status": {"state": "completed"},
+                "artifacts": [{"parts": [{"type": "text", "text": answer}]}],
+            },
+        })
 
 
 @app.get("/rl/status")
