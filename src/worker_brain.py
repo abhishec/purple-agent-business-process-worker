@@ -63,6 +63,10 @@ from src.strategy_bandit import select_strategy, record_outcome as bandit_record
 from src.compute_verifier import verify_compute_output                                         # COMPUTE math reflection gate
 from src.context_pruner import prune_case_log, prune_rl_primer                                 # context rot pruning
 from src.self_moa import numeric_moa_synthesize                                                # dual top_p MoA for numeric tasks
+from src.task_mode_classifier import (                                                         # deterministic read-only detection
+    classify_task_mode, filter_tools_for_mode, build_mode_directive,
+)
+from src.sequence_enforcer import build_sequence_hint, record_sequence_outcome                 # tool-sequence hint injection
 
 
 def _split_tools_for_phases(tools: list) -> tuple[list, list]:
@@ -384,6 +388,13 @@ class MiniAIWorker:
         self._tools = self._tools + registered
         self._tools = self._patch_tool_schemas(self._tools)  # fix slim MCP schemas before Claude sees them
 
+        # ── Task mode classification — deterministic, zero LLM, zero latency ─────
+        # Removes mutation tools entirely for read-only tasks so Claude physically
+        # cannot call them (no prompt engineering needed — the tools just don't exist).
+        task_mode = classify_task_mode(task_text)
+        self._tools = filter_tools_for_mode(self._tools, task_mode)
+        mode_directive = build_mode_directive(task_mode)
+
         # Detect computation gaps + synthesize missing tools.
         # Phase 1 (regex): max 3 new tools per task (cost guard). Haiku call, 10s timeout each.
         # Phase 2 (LLM): if Phase 1 finds nothing and task is >= 100 chars,
@@ -469,6 +480,30 @@ class MiniAIWorker:
             process_context_parts.append(self.budget.cap_prompt(rl_primer, "rl"))
         if hitl_prompt:
             process_context_parts.append(hitl_prompt)  # Gap 1: mutation block injected here
+
+        # ── Sequence hint — Haiku-powered tool call order directive ───────────────
+        # Injects an ordered step list so Claude knows which tools to call and when.
+        # Targets seq=0 failures: approval gate bypass, incomplete gather, missing notify.
+        # Cached per process_type in sequence_graph.json — zero LLM after first call.
+        tool_names_for_seq = [t.get("name", "") for t in self._tools]
+        seq_approval_required = False
+        try:
+            seq_hint = await build_sequence_hint(
+                task_text=task_text,
+                process_type=fsm.process_type,
+                policy_result=policy_result,
+                tool_names=tool_names_for_seq,
+            )
+            if seq_hint:
+                process_context_parts.append(seq_hint["directive"])
+                seq_approval_required = seq_hint.get("approval_required", False)
+        except Exception:
+            pass  # sequence hint is best-effort; never block execution
+
+        # ── Mode directive — read-only enforcement notice ─────────────────────────
+        if mode_directive:
+            process_context_parts.append(mode_directive)
+
         process_context_parts.append(self.budget.efficiency_hint())
         process_context = "\n\n".join(process_context_parts)
 
@@ -497,6 +532,7 @@ class MiniAIWorker:
             "rl_primer": rl_primer,
             "finance_ctx": finance_ctx,   # stored for REFLECT accuracy check
             "task_complexity": task_complexity,     # "full" or "readonly"
+            "_seq_approval_required": seq_approval_required,  # sequence enforcer signal
         }
 
     # ── TWO-PHASE EXECUTION ────────────────────────────────────────────────
@@ -1119,6 +1155,9 @@ class MiniAIWorker:
         # UCB1 bandit outcome — feed quality back to strategy bandit
         strategy_used = context.get("_strategy_used", "fsm")
         bandit_record(fsm.process_type, strategy_used, quality)
+
+        # SequenceGraph update — reinforce or decay the sequence for this process type
+        record_sequence_outcome(fsm.process_type, quality)
 
         # Context RL — check if pre-computed finance facts matched the answer
         finance_ctx_for_check = context.get("finance_ctx", "")
