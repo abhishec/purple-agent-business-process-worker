@@ -608,6 +608,7 @@ class MiniAIWorker:
         policy_result: dict | None,
         on_tool_call,
         process_context: str,
+        seq_hint: dict | None = None,
     ) -> tuple[str, int]:
         """
         State-gated two-phase execution: GATHER → MUTATE.
@@ -671,13 +672,33 @@ class MiniAIWorker:
         # ── Phase B: MUTATE ───────────────────────────────────────────────
         # Write-only tool set + confirm_with_user — Claude cannot re-read.
         # confirm_with_user fires before mutations, auto-confirmed in benchmark mode.
+        # Build Phase B step-order hint from sequence seed if available.
+        # This surfaces the ordered directive directly inside the execute prompt,
+        # not just as a process_context block Claude might skim past.
+        _phase_b_order = ""
+        if seq_hint:
+            _steps = seq_hint.get("steps", [])
+            # Find approval gate step index, then include that step + all after it
+            _gate_idx = next((i for i, s in enumerate(_steps) if s.get("gate") == "approval"), None)
+            _b_steps = _steps[_gate_idx:] if _gate_idx is not None else []
+            if _b_steps:
+                _lines = []
+                for s in _b_steps:
+                    _hints = s.get("tool_hints", [])
+                    _resolved = _resolve_tool_hints(_hints, {t.get("name","") for t in write_tools})
+                    _tool_str = " | ".join(_resolved[:3]) if _resolved else ", ".join(_hints[:3])
+                    _gate_note = " [CALL THIS FIRST — approval gate]" if s.get("gate") == "approval" else ""
+                    _lines.append(f"  Step {s['step']}: {s['description']}{_gate_note}\n    → {_tool_str}")
+                _phase_b_order = "\n\nREQUIRED STEP ORDER FOR PHASE 2 (follow exactly):\n" + "\n".join(_lines)
+
         execute_prompt = (
             "PHASE 2 — EXECUTE: Data has been gathered. NOW call EVERY required "
             "action tool to complete the task.\n\n"
             f"DATA COLLECTED IN PHASE 1:\n{(gathered or 'No data collected')[:5000]}\n\n"
             f"ORIGINAL TASK: {task_text[:1200]}\n\n"
-            "EXECUTE the required mutations. Do NOT re-read. Call the action tools "
-            "NOW and provide a complete summary of what was done and the outcomes."
+            + _phase_b_order
+            + "\n\nEXECUTE the required mutations in the order above. Do NOT re-read. "
+            "Call ALL action tools and provide a complete summary of what was done."
         )
         executed, ec = await solve_with_claude(
             task_text=execute_prompt,
@@ -856,6 +877,7 @@ class MiniAIWorker:
                         policy_result=policy_result,
                         on_tool_call=on_tool_call,
                         process_context=process_context,
+                        seq_hint=context.get("_seq_hint"),
                     )
                     strategy = "fsm"
 
