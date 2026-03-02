@@ -698,7 +698,9 @@ class MiniAIWorker:
             f"ORIGINAL TASK: {task_text[:1200]}\n\n"
             + _phase_b_order
             + "\n\nEXECUTE the required mutations in the order above. Do NOT re-read. "
-            "Call ALL action tools and provide a complete summary of what was done."
+            "Call the required action tools per the ORIGINAL TASK instructions. "
+            "If the task explicitly says NOT to call a specific tool, skip it. "
+            "Provide a complete summary of what was done."
         )
         executed, ec = await solve_with_claude(
             task_text=execute_prompt,
@@ -990,6 +992,14 @@ class MiniAIWorker:
                 # Extract potential tool-name patterns from the task text.
                 # A tool name looks like: lower_snake_case with at least one underscore.
                 _task_tool_mentions = re.findall(r'\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b', task_text)
+                # Detect NEGATED tool mentions: "do not call X", "NOT call X", "avoid X", "skip X"
+                # These must be EXCLUDED — a tool mentioned as forbidden is not a requirement.
+                _negated_tools: set[str] = set(re.findall(
+                    r'(?:do\s+not|not|don\'t|avoid|skip|never)\s+(?:call\s+)?'
+                    r'([a-z][a-z0-9]*(?:_[a-z0-9]+)+)',
+                    task_text, re.IGNORECASE,
+                ))
+                _task_tool_mentions = [t for t in _task_tool_mentions if t not in _negated_tools]
                 # Intersect against the actual available write tools — eliminates false positives
                 _, _phase_write_tools = _split_tools_for_phases(self._tools)
                 _write_tool_names_set = {t.get("name", "") for t in _phase_write_tools}

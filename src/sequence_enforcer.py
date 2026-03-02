@@ -288,33 +288,30 @@ _SEED_SEQUENCES: dict[str, dict] = {
         "confidence": 0.80, "hits": 3, "haiku_generated": False,
     },
     "subscription_migration": {
+        # Derived from benchmark gold standard (74/100 passing runs).
+        # Key rule: do NOT call proceed_migration — migration is held pending
+        # customer sign-off AND data export completion.
+        # pause_migration is the correct completion signal.
         "steps": [
-            {"step": 1, "description": "Fetch subscription, plan features, and customer context",
+            {"step": 1, "description": "Fetch subscription data, current features, and new plan features",
              "tool_hints": ["get_subscription", "get_current_features", "get_new_plan_features",
-                            "get_customer", "fetch_subscription"],
+                            "fetch_subscription"],
              "required": True, "gate": None},
-            {"step": 2, "description": "Run compatibility test and generate conflict/impact report",
-             "tool_hints": ["run_integration_compatibility_test", "run_", "generate_conflict_report",
-                            "generate_", "check_compatibility"],
+            {"step": 2, "description": "Generate conflict/breaking-changes report for the plan migration",
+             "tool_hints": ["generate_conflict_report", "generate_", "check_compatibility"],
              "required": True, "gate": None},
-            {"step": 3, "description": "Calculate proration, export files, billing delta",
-             "tool_hints": ["calculate_prorated_billing", "calculate_export_files",
-                            "calculate_proration", "calculate_"],
+            {"step": 3, "description": "Calculate data export file count for the migration",
+             "tool_hints": ["calculate_export_files", "calculate_"],
              "required": True, "gate": None},
-            {"step": 4, "description": "Require customer sign-off / approval before migration (REQUIRED)",
+            {"step": 4, "description": "Require customer sign-off on all breaking changes (APPROVAL GATE)",
              "tool_hints": ["require_customer_signoff", "confirm_with_user", "require_",
                             "signoff", "request_approval"],
              "required": True, "gate": "approval"},
-            {"step": 5, "description": "Proceed or pause migration; export data if needed",
-             "tool_hints": ["proceed_migration", "initiate_data_export", "pause_migration",
-                            "proceed_", "initiate_", "apply_migration", "activate_"],
-             "required": True, "gate": None},
-            {"step": 6, "description": "Notify enterprise team and customer of outcome",
-             "tool_hints": ["notify_enterprise_team", "notify_customer", "notify_",
-                            "send_notification"],
+            {"step": 5, "description": "Initiate data export; pause migration (do NOT proceed until export + signoff complete)",
+             "tool_hints": ["initiate_data_export", "pause_migration", "initiate_"],
              "required": True, "gate": None},
         ],
-        "confidence": 0.85, "hits": 3, "haiku_generated": False,
+        "confidence": 0.92, "hits": 6, "haiku_generated": False,
     },
     "payroll": {
         "steps": [

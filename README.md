@@ -74,11 +74,20 @@ PRIMARY:  Two-phase GATHER → MUTATE (structural separation)
 GATE:     Universal Approval Gate in _direct_call() (mechanical, not prompt-based)
 L2:       Completion Contract  — mutation_count==0 on full task → write-tools-only retry
 L3:       Tool Coverage Check  — tools named in task_text not called → targeted retry
+          L3 Negation Guard    — tools mentioned as "do NOT call X" excluded from required set
 L3b:      Sequence Coverage    — seq_hint required steps not called → retry (prefix-resolved)
 COMPUTE:  Math Reflection      — Haiku critiques numeric answers before MUTATE
 ```
 
 Each layer fires independently. The structural gate and two-phase execution prevent the problem; L2/L3/L3b catch it if it slips through.
+
+### L3 Negation Guard
+
+L3's tool coverage check extracts tool names from task text and retries if any required tool
+was not called. The negation guard prevents false positives: if the task says "do NOT call X",
+"avoid X", or "skip X", that tool is excluded from the required set. This handles tasks where
+the correct behavior is to explicitly NOT execute a particular mutation (e.g., subscription
+migrations where `proceed_migration` must be held until export completes).
 
 ## Sequence Enforcer
 
@@ -172,8 +181,8 @@ python main.py --host 0.0.0.0 --port 9010
 # Core logic checks (no API key required — ~3 seconds)
 python simulate_competition.py        # 19 checks: math, FSM, bandit, schema, brackets
 
-# Phase 15+16+17 targeted checks (no API key required — ~5 seconds)
-python simulate_phase15_16.py         # 64 checks: seeds, gate, L3b, dynamic approval, SaaS migration
+# Phase 15-18 targeted checks (no API key required — ~5 seconds)
+python simulate_phase15_16.py         # 82 checks: seeds, gate, L3b, dynamic approval, SaaS migration, L3 negation
 ```
 
 Both suites run without a live LLM or MCP server — they test deterministic logic only.

@@ -267,10 +267,13 @@ check("_is_write_tool: calculate_prorated_billing → False (calculate_ read pre
       not _is_write_tool("calculate_prorated_billing"),
       f"got={_is_write_tool('calculate_prorated_billing')}")
 
-# 4. subscription_migration seed: updated for task_09
+# 4. subscription_migration seed: Phase 18 gold-standard-derived sequence
+# Gold standard (74/100): get_subscription → get_current/new_features →
+#   generate_conflict_report → calculate_export_files → require_customer_signoff →
+#   initiate_data_export → pause_migration (NO proceed_migration)
 sm = _SEED_SEQUENCES["subscription_migration"]
-check("subscription_migration: 6 steps (updated from 5)",
-      len(sm["steps"]) == 6,
+check("subscription_migration: 5 steps (gold standard sequence)",
+      len(sm["steps"]) == 5,
       f"steps={len(sm['steps'])}")
 step4_hints = sm["steps"][3]["tool_hints"]
 check("subscription_migration step4: require_customer_signoff in hints",
@@ -280,12 +283,18 @@ check("subscription_migration step4: gate=approval",
       sm["steps"][3].get("gate") == "approval",
       f"gate={sm['steps'][3].get('gate')}")
 step2_hints = sm["steps"][1]["tool_hints"]
-check("subscription_migration step2: run_integration_compatibility_test in hints",
-      "run_integration_compatibility_test" in step2_hints,
+check("subscription_migration step2: generate_conflict_report in hints (NOT compatibility test)",
+      "generate_conflict_report" in step2_hints,
       f"hints={step2_hints}")
 step5_hints = sm["steps"][4]["tool_hints"]
-check("subscription_migration step5: proceed_migration in hints",
-      "proceed_migration" in step5_hints,
+check("subscription_migration step5: proceed_migration NOT in hints (CRITICAL — do NOT call)",
+      "proceed_migration" not in step5_hints,
+      f"hints={step5_hints}")
+check("subscription_migration step5: pause_migration in hints (correct completion signal)",
+      "pause_migration" in step5_hints,
+      f"hints={step5_hints}")
+check("subscription_migration step5: initiate_data_export in hints",
+      "initiate_data_export" in step5_hints,
       f"hints={step5_hints}")
 
 # 5. smart_classifier maps saas migration keywords
@@ -331,6 +340,84 @@ check("worker_brain: tool_name == _approval_tool_name (dynamic check)",
 check("worker_brain: _has_confirm_tool uses _approval_tool_name",
       "_approval_tool_name is not None" in wb_src,
       "found" if "_approval_tool_name is not None" in wb_src else "MISSING")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PHASE 18 — task_09 root cause fixes
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n── Phase 18: task_09 root-cause fixes ─────────────────────────────────")
+import re
+
+# 1. L3 negation detection: "do NOT call proceed_migration" → exclude from required
+# Simulate the L3 extraction logic from worker_brain.py
+def _l3_required_tools(task_text: str, write_tool_names: set) -> list:
+    """Simulate L3 extraction — mirrors worker_brain.py L3 logic."""
+    mentions = re.findall(r'\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b', task_text)
+    negated = set(re.findall(
+        r'(?:do\s+not|not|don\'t|avoid|skip|never)\s+(?:call\s+)?'
+        r'([a-z][a-z0-9]*(?:_[a-z0-9]+)+)',
+        task_text, re.IGNORECASE,
+    ))
+    filtered = [t for t in mentions if t not in negated]
+    return [t for t in filtered if t in write_tool_names]
+
+task09_task_text = (
+    "Migrate Nexus Corp (SUB-NEXUS-001) from Enterprise Legacy to Enterprise Cloud. "
+    "call require_customer_signoff for all 4 breaking changes. "
+    "call initiate_data_export (calculate 847 GB / 50 GB max file = 17 files). "
+    "do NOT call proceed_migration -- wait for customer signoff and export completion."
+)
+task09_write_tools = {"require_customer_signoff", "initiate_data_export", "proceed_migration",
+                      "pause_migration", "notify_enterprise_team"}
+l3_required = _l3_required_tools(task09_task_text, task09_write_tools)
+
+check("L3 negation: proceed_migration excluded when task says 'do NOT call proceed_migration'",
+      "proceed_migration" not in l3_required,
+      f"L3 required={l3_required}")
+check("L3 negation: require_customer_signoff still required (not negated)",
+      "require_customer_signoff" in l3_required,
+      f"L3 required={l3_required}")
+check("L3 negation: initiate_data_export still required (not negated)",
+      "initiate_data_export" in l3_required,
+      f"L3 required={l3_required}")
+
+# 2. L3 negation handles various negation phrases
+negation_variants = [
+    ("do NOT call proceed_migration", True),
+    ("not call proceed_migration", True),
+    ("avoid proceed_migration", True),
+    ("skip proceed_migration", True),
+    ("never call proceed_migration", True),
+    ("call proceed_migration first", False),  # NOT negated
+]
+for phrase, should_be_negated in negation_variants:
+    negated = set(re.findall(
+        r'(?:do\s+not|not|don\'t|avoid|skip|never)\s+(?:call\s+)?'
+        r'([a-z][a-z0-9]*(?:_[a-z0-9]+)+)',
+        phrase, re.IGNORECASE,
+    ))
+    is_negated = "proceed_migration" in negated
+    check(f"L3 negation phrase '{phrase[:40]}': negated={should_be_negated}",
+          is_negated == should_be_negated,
+          f"negated_tools={negated}")
+
+# 3. Phase B execute_prompt does NOT say "Call ALL action tools"
+check("Phase B execute_prompt: does NOT say 'Call ALL action tools' (changed to 'required')",
+      "Call ALL action tools" not in wb_src,
+      "not found (good)" if "Call ALL action tools" not in wb_src else "FOUND — still wrong")
+check("Phase B execute_prompt: says 'required action tools per the ORIGINAL TASK'",
+      "required action tools per the ORIGINAL TASK" in wb_src,
+      "found" if "required action tools per the ORIGINAL TASK" in wb_src else "MISSING")
+check("Phase B execute_prompt: mentions 'NOT to call a specific tool, skip it'",
+      "NOT to call a specific tool, skip it" in wb_src,
+      "found" if "NOT to call a specific tool, skip it" in wb_src else "MISSING")
+
+# 4. L3 negation code is in worker_brain
+check("worker_brain: _negated_tools set exists in L3",
+      "_negated_tools" in wb_src,
+      "found" if "_negated_tools" in wb_src else "MISSING")
+check("worker_brain: L3 filters negated tools from mentions",
+      "t not in _negated_tools" in wb_src,
+      "found" if "t not in _negated_tools" in wb_src else "MISSING")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
