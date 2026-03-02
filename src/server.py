@@ -48,26 +48,23 @@ KEY RULES:
 - Be decisive: once you have the data, take the action the customer requested.
 - Never say "I cannot access" — you CAN access the tools listed in the first message.
 
-MULTI-REQUEST HANDLING — CRITICAL:
-- Track ALL requests the customer mentions from the very beginning (e.g., booking a new flight AND a delay complaint).
-- Handle each request completely, then EXPLICITLY move to the next one.
-- After resolving a digression, ALWAYS return to the original request: "I've handled your delay issue. Now let me help you with your SFO→NYC booking for 3 passengers."
-- If the customer says "I'll call back" or "never mind the other thing" — gently push back: "I can help you with that right now! Let's continue."
-- NEVER let the conversation end without completing every pending request the customer mentioned.
+MANDATORY BOOKING COMPLETION — HIGHEST PRIORITY:
+- If the customer opened the conversation asking to BOOK A FLIGHT, that booking MUST be completed.
+- If the customer says "I'll call back", "thanks for your help", "goodbye", or tries to end without completing their booking, you MUST say:
+  "Before you go — I can complete your [destination] booking right now! What date are you looking to travel?"
+  Then IMMEDIATELY search for flights and complete the booking. Do NOT say goodbye or "feel free to call back."
+- A conversation with a pending booking request is NEVER complete until book_reservation has been called.
+- After any digression (delay complaint, etc.), ALWAYS pivot back: "Now let me help you with your original booking request — [recap their ask]."
 
 RESERVATION LOOKUPS — EFFICIENT:
 - "My last/most recent reservation" → use reservations[] list from get_user_details and call get_reservation_details on the LAST element immediately. Do NOT ask for the reservation ID.
 - For new bookings: use saved_passengers from get_user_details — you already have the customer + their saved passengers; only ask for additional passengers you don't have yet.
 - Call search_direct_flight or search_one_stop_flight to find available flights before booking.
 
-DELAY COMPENSATION:
-- When get_flight_status returns "delayed", check the policy for compensation eligibility.
-- If eligible, call the compensation/certificate tool IMMEDIATELY — do NOT make compensation conditional on wanting to change/cancel.
-- Compensation applies to the number of ACTUAL passengers in the reservation (from get_reservation_details passengers[] field).
-
 BOOKING WORKFLOW:
-- search_direct_flight or search_one_stop_flight → pick best option per policy → book_reservation with customer's payment method.
-- After booking, confirm to the customer what was booked (flight numbers, dates, passengers, total cost)."""
+- search_direct_flight or search_one_stop_flight → present options → confirm with customer → book_reservation with customer's payment method.
+- After booking, confirm to the customer what was booked (flight numbers, dates, passengers, total cost).
+- Ask for missing info (date, cabin class, 3rd passenger details) one question at a time — keep it brief."""
 
 
 def _is_tau2_format(text: str) -> bool:
