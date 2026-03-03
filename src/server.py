@@ -509,7 +509,7 @@ def _try_build_book_reservation(session: list, context_id: str) -> dict | None:
             "cabin": cabin,
             "flights": flights,
             "passengers": passengers,
-            "payment_method_id": payment_method_id,
+            "payment_methods": payment_method_id,
             "total_baggages": 0,
             "nonfree_baggages": 0,
         },
