@@ -20,8 +20,41 @@ from src.config import ANTHROPIC_API_KEY, FALLBACK_MODEL
 # inside the first A2A message text, and expects our agent to respond with JSON
 # action objects: {"name": "tool_name", "arguments": {...}} each turn.
 # We maintain per-context conversation history so Claude accumulates full context.
-_tau2_sessions: dict[str, list[dict]] = {}  # contextId → LLM message history
-_tau2_booking_pending: dict[str, bool] = {}  # contextId → booking is awaiting completion
+#
+# SCALING: Sessions are keyed by contextId. In a long-running process this dict
+# grows without bound → sessions are evicted after _TAU2_SESSION_TTL_SEC seconds.
+_TAU2_SESSION_TTL_SEC: int = int(os.getenv("TAU2_SESSION_TTL_SEC", "3600"))  # 1 h default
+_tau2_sessions: dict[str, list[dict]] = {}   # contextId → LLM message history
+_tau2_last_seen: dict[str, float] = {}        # contextId → last-access unix timestamp
+
+# ── Booking-pivot guardrail constants (no hardcoding inside functions) ─────────
+# Phrases that ONLY appear in a customer's booking-intent opening message.
+# They will NOT appear in cancel/refund openers or in embedded tool schema text.
+_BOOKING_TASK_PHRASES: tuple[str, ...] = (
+    "book a flight from",
+    "want to book a flight",
+    "i'd like to book a flight",
+    "i would like to book",
+    "book flights from",
+    "book flight from",
+    "looking to book a flight",
+    "help me book a flight",
+    "need to book a flight",
+    "like to book a flight",
+)
+# Phrases that indicate the agent already asked the travel-date / cabin question.
+_BOOKING_Q_PHRASES: tuple[str, ...] = (
+    "what date", "which date", "departure date", "travel date",
+    "when would you like to travel", "when would you like to fly",
+    "when do you want to fly", "when do you want to travel",
+    "when are you looking to travel", "when would you prefer",
+    "when are you planning to", "what day would you",
+    "what cabin class", "which cabin class", "preferred cabin",
+)
+# The pivot sentence appended when the date/cabin question is missing.
+_BOOKING_PIVOT: str = (
+    " What date would you like to travel and what cabin class would you prefer?"
+)
 
 TAU2_SYSTEM_PROMPT = """You are an expert airline customer service agent working inside the tau2-bench evaluation framework.
 
@@ -86,19 +119,99 @@ BOOKING WORKFLOW:
 
 def _is_tau2_format(text: str) -> bool:
     """Detect tau2-bench conversation: tool schemas are embedded as JSON in message text."""
+    t = text.lower()
     return (
-        "Here's a list of tools you can use" in text
-        or "here's a list of tools you can use" in text.lower()
-        or ('"type": "function"' in text and '"name": "respond"' in text)
+        "here's a list of tools you can use" in t
+        or ('"type": "function"' in t and '"name": "respond"' in t)
     )
 
 
+def _evict_stale_tau2_sessions() -> None:
+    """Remove sessions not accessed in the last _TAU2_SESSION_TTL_SEC seconds.
+
+    Called at the start of each turn so memory usage stays bounded regardless
+    of how long the process runs.  O(sessions) but sessions are typically < 50.
+    """
+    cutoff = time.time() - _TAU2_SESSION_TTL_SEC
+    stale = [k for k, ts in _tau2_last_seen.items() if ts < cutoff]
+    for k in stale:
+        _tau2_sessions.pop(k, None)
+        _tau2_last_seen.pop(k, None)
+    if stale:
+        print(f"[tau2] evicted {len(stale)} stale session(s)", flush=True)
+
+
+def _apply_booking_pivot(context_id: str, parsed: dict) -> None:
+    """Guardrail: for booking tasks ensure every non-first respond() ends with
+    the date/cabin question.  Mutates parsed["arguments"]["content"] in-place.
+
+    Detection is fully stateless — the first user message is re-checked every
+    turn, so there is no persistent flag that can fall out of sync across
+    concurrent requests.
+    """
+    if parsed.get("name") != "respond":
+        return
+
+    content: str = parsed.get("arguments", {}).get("content", "")
+    session = _tau2_sessions.get(context_id, [])
+    if not session:
+        return
+
+    # ── 1. Detect booking task from customer's opening message ────────────────
+    first_msg = session[0].get("content", "")
+    if not isinstance(first_msg, str):
+        return
+    first_lower = first_msg.lower()
+    booking_task = any(kw in first_lower for kw in _BOOKING_TASK_PHRASES)
+
+    # ── 2. Count previous respond() calls (skip injection on the very first) ──
+    prev_responds = sum(
+        1 for m in session
+        if m.get("role") == "assistant"
+        and isinstance(m.get("content"), str)
+        and '"name": "respond"' in m["content"]
+    )
+
+    # ── 3. Check if book_reservation has already been called ──────────────────
+    already_booked = any(
+        m.get("role") == "assistant"
+        and isinstance(m.get("content"), str)
+        and "book_reservation" in m["content"]
+        for m in session
+    )
+
+    print(
+        f"[tau2] pivot-guard ctx={context_id[:8]} booking={booking_task} "
+        f"prev_resp={prev_responds} booked={already_booked}",
+        flush=True,
+    )
+
+    if not (booking_task and prev_responds > 0 and not already_booked):
+        return
+
+    # ── 4. Inject pivot if date/cabin question is missing ─────────────────────
+    content_lower = content.lower()
+    has_date_q = any(q in content_lower for q in _BOOKING_Q_PHRASES)
+    print(
+        f"[tau2] pivot-guard ctx={context_id[:8]} has_date_q={has_date_q} "
+        f"content_start={content[:60]!r}",
+        flush=True,
+    )
+    if not has_date_q:
+        parsed["arguments"]["content"] = content.rstrip() + _BOOKING_PIVOT
+        print(f"[tau2] booking pivot injected for ctx={context_id[:8]}", flush=True)
+
+
 async def _handle_tau2_turn(context_id: str, message_text: str) -> str:
-    """Handle one tau2 multi-turn conversation step. Returns JSON action string."""
+    """Handle one tau2 multi-turn conversation step.  Returns JSON action string."""
     import anthropic as _anthropic
+
+    # Evict sessions that have timed out before we do anything else.
+    _evict_stale_tau2_sessions()
 
     if context_id not in _tau2_sessions:
         _tau2_sessions[context_id] = []
+    _tau2_last_seen[context_id] = time.time()
 
     _tau2_sessions[context_id].append({"role": "user", "content": message_text})
 
@@ -112,79 +225,42 @@ async def _handle_tau2_turn(context_id: str, message_text: str) -> str:
         )
         answer = response.content[0].text.strip() if response.content else ""
     except Exception as e:
-        answer = json.dumps({"name": "respond", "arguments": {"content": f"I apologize, I encountered an error. Please try again. ({e})"}})
+        answer = json.dumps({"name": "respond", "arguments": {
+            "content": f"I apologize, I encountered an error. Please try again. ({e})"
+        }})
 
-    # Ensure the answer is valid JSON (fall back to respond action if not)
+    # Ensure the answer is valid JSON (fall back to respond action if not).
     try:
         parsed = json.loads(answer)
-        # Validate it has the right structure
         if "name" not in parsed:
-            raise ValueError("missing name")
-        # Fix double-JSON bug: if respond action's content is itself a JSON action, unwrap it
+            raise ValueError("missing 'name' key")
+
+        # Fix double-JSON bug: if respond content is itself a JSON action, unwrap it.
         if parsed.get("name") == "respond":
             inner = parsed.get("arguments", {}).get("content", "")
             if isinstance(inner, str) and inner.strip().startswith("{"):
                 try:
                     inner_parsed = json.loads(inner.strip())
                     if isinstance(inner_parsed, dict) and "name" in inner_parsed:
-                        parsed = inner_parsed  # use the inner action directly
+                        parsed = inner_parsed
                 except Exception:
-                    pass  # content is just text starting with '{'
-        # Booking pivot guardrail (v4 — stateless: detect from first USER message):
-        # Uses specific multi-word phrases that ONLY appear in the customer's booking request,
-        # NOT in tool schema descriptions or cancel-task openers → zero false positives.
-        # Stateless so no persistence bugs; rechecks every turn.
-        if parsed.get("name") == "respond":
-            _content = parsed.get("arguments", {}).get("content", "")
-            _first_content = (_tau2_sessions[context_id][0].get("content", "")
-                              if _tau2_sessions[context_id] else "")
-            # Detect booking task: customer says "book a flight from X to Y" in opening message.
-            # These phrases won't appear in cancel-task openers or tool schema descriptions.
-            _booking_task = isinstance(_first_content, str) and any(
-                kw in _first_content.lower()
-                for kw in ("book a flight from", "want to book a flight",
-                           "i'd like to book a flight", "i would like to book",
-                           "book flights from", "book flight from",
-                           "looking to book a flight", "help me book a flight")
-            )
-            # Count previous respond() calls (skip injection on the very first respond)
-            _prev_responds = sum(
-                1 for m in _tau2_sessions[context_id]
-                if m.get("role") == "assistant"
-                and isinstance(m.get("content"), str)
-                and '"name": "respond"' in m.get("content", "")
-            )
-            # Check if book_reservation has already been called
-            _already_booked = any(
-                isinstance(m.get("content"), str) and "book_reservation" in m.get("content", "")
-                for m in _tau2_sessions[context_id] if m.get("role") == "assistant"
-            )
-            print(f"[tau2] guard ctx={context_id[:8]} booking_task={_booking_task} "
-                  f"prev_resp={_prev_responds} booked={_already_booked}", flush=True)
-            if _booking_task and _prev_responds > 0 and not _already_booked:
-                _booking_q_phrases = (
-                    "what date", "which date", "departure date", "travel date",
-                    "when would you like to travel", "when would you like to fly",
-                    "when do you want to fly", "when do you want to travel",
-                    "when are you looking to travel", "when would you prefer",
-                    "when are you planning to", "what day would you",
-                    "what cabin class", "which cabin class", "preferred cabin",
-                )
-                _has_date_q = any(q in _content.lower() for q in _booking_q_phrases)
-                print(f"[tau2] guard ctx={context_id[:8]} has_date_q={_has_date_q} "
-                      f"content_start={_content[:60]!r}", flush=True)
-                if not _has_date_q:
-                    _pivot = " What date would you like to travel and what cabin class would you prefer?"
-                    parsed["arguments"]["content"] = _content.rstrip() + _pivot
-                    print(f"[tau2] booking pivot injected for ctx={context_id[:8]}", flush=True)
+                    pass  # content just happens to start with '{'
 
-        answer = json.dumps(parsed)  # normalise whitespace
+        # Apply the booking-pivot guardrail (mutates parsed in-place).
+        _apply_booking_pivot(context_id, parsed)
+
+        answer = json.dumps(parsed)  # normalise whitespace / key ordering
     except Exception:
-        # Claude returned non-JSON text — wrap it as a respond action
+        # Claude returned non-JSON — wrap as a respond action so the evaluator
+        # always gets a valid JSON action string from us.
         answer = json.dumps({"name": "respond", "arguments": {"content": answer}})
 
     _tau2_sessions[context_id].append({"role": "assistant", "content": answer})
-    print(f"[tau2] ctx={context_id[:8]} turn={len(_tau2_sessions[context_id])//2} answer={answer[:120]}", flush=True)
+    print(
+        f"[tau2] ctx={context_id[:8]} turn={len(_tau2_sessions[context_id]) // 2} "
+        f"answer={answer[:120]}",
+        flush=True,
+    )
     return answer
 
 app = FastAPI(title="BrainOS Purple Agent", version="5.0.0")
