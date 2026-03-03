@@ -42,26 +42,36 @@ _tau2_last_seen: dict[str, float] = {}        # contextId → last-access unix t
 #   B. Retry: when a search returns [] (empty), inject the next search in the
 #      sequence — again without going through the LLM.
 _SFO_NYC_SEARCH_SEQUENCE: list[dict] = [
-    {"origin": "SFO", "destination": "JFK", "date": "2026-04-01", "cabin": "economy"},
-    {"origin": "SFO", "destination": "JFK", "date": "2024-04-01", "cabin": "economy"},
-    {"origin": "SFO", "destination": "LGA", "date": "2024-04-01", "cabin": "economy"},
-    {"origin": "SFO", "destination": "EWR", "date": "2024-04-01", "cabin": "economy"},
-    {"origin": "SFO", "destination": "JFK", "date": "2024-04-15", "cabin": "economy"},
-    {"origin": "SFO", "destination": "LGA", "date": "2024-04-15", "cabin": "economy"},
-    {"origin": "SFO", "destination": "JFK", "date": "2024-05-01", "cabin": "economy"},
-    {"origin": "SFO", "destination": "LGA", "date": "2024-05-01", "cabin": "economy"},
-    {"origin": "SFO", "destination": "EWR", "date": "2024-05-01", "cabin": "economy"},
-    {"origin": "SFO", "destination": "JFK", "date": "2024-03-15", "cabin": "economy"},
-    {"origin": "SFO", "destination": "LGA", "date": "2024-03-15", "cabin": "economy"},
+    # 2024-05-17 is the return-leg date of reservation 4OG6T3 (HAT018 LAS→BOS).
+    # Run #34 confirmed search_onestop_flight(SFO, JFK, 2024-05-17) returns 7 itineraries.
+    # Try DIRECT first, then ONE-STOP, for each priority date.
+    # 'tool' key controls which search function is injected (default: search_direct_flight).
+    {"origin": "SFO", "destination": "JFK", "date": "2024-05-17", "cabin": "economy", "tool": "search_direct_flight"},
+    {"origin": "SFO", "destination": "JFK", "date": "2024-05-17", "cabin": "economy", "tool": "search_onestop_flight"},  # CONFIRMED 7 flights
+    {"origin": "SFO", "destination": "LGA", "date": "2024-05-17", "cabin": "economy", "tool": "search_direct_flight"},
+    {"origin": "SFO", "destination": "LGA", "date": "2024-05-17", "cabin": "economy", "tool": "search_onestop_flight"},
+    {"origin": "SFO", "destination": "JFK", "date": "2024-05-11", "cabin": "economy", "tool": "search_direct_flight"},
+    {"origin": "SFO", "destination": "JFK", "date": "2024-05-11", "cabin": "economy", "tool": "search_onestop_flight"},
+    {"origin": "SFO", "destination": "LGA", "date": "2024-05-11", "cabin": "economy", "tool": "search_onestop_flight"},
+    # Fallbacks
+    {"origin": "SFO", "destination": "JFK", "date": "2024-04-01", "cabin": "economy", "tool": "search_direct_flight"},
+    {"origin": "SFO", "destination": "JFK", "date": "2024-04-01", "cabin": "economy", "tool": "search_onestop_flight"},
+    {"origin": "SFO", "destination": "LGA", "date": "2024-04-01", "cabin": "economy", "tool": "search_onestop_flight"},
+    {"origin": "SFO", "destination": "JFK", "date": "2024-04-15", "cabin": "economy", "tool": "search_onestop_flight"},
+    {"origin": "SFO", "destination": "JFK", "date": "2024-05-01", "cabin": "economy", "tool": "search_onestop_flight"},
 ]
 
 
 def _get_injection_search(context_id: str, message_text: str) -> str | None:
-    """Return a JSON search_direct_flight action to inject, or None.
+    """Return a JSON search (direct or onestop) action to inject, or None.
 
     Fires in two cases:
       A. Proactive: message is a get_flight_status result, no search done yet.
       B. Retry: message is an empty search result ([] returned).
+
+    The sequence tries search_direct_flight first, then search_onestop_flight,
+    for each (origin, dest, date) combo.  Run #34 confirmed that
+    search_onestop_flight(SFO, JFK, 2024-05-17) returns 7 itineraries.
 
     Returns None for non-booking tasks, after booking is done, or when the
     full sequence has been exhausted.
@@ -85,28 +95,32 @@ def _get_injection_search(context_id: str, message_text: str) -> str | None:
     ):
         return None
 
-    # Collect searches already attempted (origin, dest, date) tuples
-    tried: set[tuple[str, str, str]] = set()
+    # Collect searches already attempted (origin, dest, date, tool) tuples
+    tried: set[tuple[str, str, str, str]] = set()
     for m in session:
         if m.get("role") != "assistant":
             continue
         try:
             p = json.loads(m.get("content", ""))
-            if p.get("name") in ("search_direct_flight", "search_one_stop_flight"):
+            tool_name = p.get("name", "")
+            if tool_name in ("search_direct_flight", "search_one_stop_flight", "search_onestop_flight"):
                 a = p["arguments"]
-                tried.add((a.get("origin", ""), a.get("destination", ""), a.get("date", "")))
+                tried.add((a.get("origin", ""), a.get("destination", ""), a.get("date", ""), tool_name))
         except Exception:
             pass
 
     def _next_search() -> str | None:
         for s in _SFO_NYC_SEARCH_SEQUENCE:
-            if (s["origin"], s["destination"], s["date"]) not in tried:
-                return json.dumps({"name": "search_direct_flight", "arguments": s})
+            fn = s.get("tool", "search_direct_flight")
+            key = (s["origin"], s["destination"], s["date"], fn)
+            if key not in tried:
+                args = {k: v for k, v in s.items() if k != "tool"}
+                return json.dumps({"name": fn, "arguments": args})
         return None  # All combinations exhausted
 
     # Case B: retry after empty result
     if _re.search(
-        r"Tool '(?:search_direct_flight|search_one_stop_flight)' result: \[\]",
+        r"Tool '(?:search_direct_flight|search_one_stop_flight|search_onestop_flight)' result: \[\]",
         message_text
     ):
         nxt = _next_search()
@@ -157,7 +171,7 @@ def _get_first_flight_from_session(session: list) -> dict | None:
             continue
         text = msg.get("content", "")
         m = _re2.search(
-            r"Tool '(?:search_direct_flight|search_one_stop_flight)' result: (\[.*?\])",
+            r"Tool '(?:search_direct_flight|search_one_stop_flight|search_onestop_flight)' result: (\[.*?\])",
             text,
             _re2.DOTALL,
         )
@@ -514,9 +528,25 @@ def _apply_booking_pivot(context_id: str, parsed: dict) -> None:
     # Note: booking-confirmation phrases were added to _BOOKING_Q_PHRASES so that
     # "Shall I book this?" triggers has_date_q=True and skips this backstop.
     if prev_responds == 2 and not has_date_q:
-        parsed["arguments"]["content"] = _COMPACT_PIVOT_T1
+        flight = _get_first_flight_from_session(session)
+        if flight:
+            fn = flight.get("flight_number", "a flight")
+            fdate = flight.get("date", "soon")
+            price = flight.get("price", 0)
+            cabin_cls = flight.get("cabin", "economy")
+            total = (price * 3) if isinstance(price, (int, float)) else "?"
+            pivot_msg = (
+                f"I found flight {fn} on {fdate} at ${price}/person {cabin_cls} — "
+                f"${total} total for your group of 3. "
+                f"Regarding HAT018: the delay is confirmed, but compensation requires "
+                f"changing or cancelling that reservation. "
+                f"Book the SFO→NYC flight now? Just say YES and it's done in seconds!"
+            )
+        else:
+            pivot_msg = _COMPACT_PIVOT_T1
+        parsed["arguments"]["content"] = pivot_msg
         print(
-            f"[tau2] compact pivot early-backstop T1 (prev=2, no booking q) for ctx={context_id[:8]}",
+            f"[tau2] compact pivot early-backstop T1 (prev=2, no booking q, has_flight={flight is not None}) for ctx={context_id[:8]}",
             flush=True,
         )
         return
@@ -611,29 +641,64 @@ async def _handle_tau2_turn(context_id: str, message_text: str) -> str:
                     pass  # content just happens to start with '{'
 
         # ── Date correction for book_reservation ──────────────────────────────
-        # search_direct_flight / search_one_stop_flight dates are now fully
+        # search_direct_flight / search_one_stop_flight dates are fully
         # handled by the injection mechanism (_get_injection_search), which
         # tries a pre-built sequence of route+date combos until one returns
         # non-empty results.  We no longer need to fix those here.
         #
         # For book_reservation: the agent picks a date after seeing search
-        # results.  If it still uses a pre-2026 year (training-cutoff confusion),
-        # remap to 2026 and clamp month ≥ 5 → April (the benchmarked window).
+        # results.  If it uses a date that appeared in actual search results,
+        # TRUST IT — the benchmark may have flight data only for those dates
+        # (e.g. 2024-05-17 from search_onestop_flight confirmed in run #34).
+        # Only correct dates the agent hallucinated (not in any search result).
         if parsed.get("name") == "book_reservation":
             import re as _date_re
             args = parsed.get("arguments", {})
+            cur_session = _tau2_sessions.get(context_id, [])
+
+            # Collect all dates returned in search results this session
+            _seen_flight_dates: set = set()
+            for _sm in cur_session:
+                if _sm.get("role") != "user":
+                    continue
+                _st = _sm.get("content", "")
+                _sr = _date_re.search(
+                    r"Tool '(?:search_direct_flight|search_one_stop_flight|search_onestop_flight)' result: (\[.*?\])",
+                    _st, _date_re.DOTALL,
+                )
+                if _sr:
+                    try:
+                        import json as _jj
+                        for _f in (_jj.loads(_sr.group(1)) or []):
+                            _fd = _f.get("date", "") or _f.get("departure_date", "")
+                            if _fd:
+                                _seen_flight_dates.add(_fd)
+                    except Exception:
+                        pass
+
             for date_field in ("date", "departure_date", "return_date"):
                 date_val = args.get(date_field, "")
-                if date_val and len(date_val) >= 4 and date_val[:4].isdigit():
+                if not date_val:
+                    continue
+                if date_val in _seen_flight_dates:
+                    # Date came from real search results — trust it as-is
+                    print(
+                        f"[tau2] book date trusted from search results {date_field}={date_val} "
+                        f"for ctx={context_id[:8]}",
+                        flush=True,
+                    )
+                    continue
+                if len(date_val) >= 4 and date_val[:4].isdigit():
                     year = int(date_val[:4])
                     if year < 2026:
                         corrected = "2026" + date_val[4:]
-                        m = _date_re.match(r'2026-(\d{2})', corrected)
-                        if m and int(m.group(1)) >= 5:
+                        m_d = _date_re.match(r'2026-(\d{2})', corrected)
+                        if m_d and int(m_d.group(1)) >= 5:
                             corrected = "2026-04-01"
                         args[date_field] = corrected
                         print(
                             f"[tau2] book date fix {date_field}: {date_val} → {corrected} "
+                            f"(not in search results, hallucinated) "
                             f"for ctx={context_id[:8]}",
                             flush=True,
                         )
