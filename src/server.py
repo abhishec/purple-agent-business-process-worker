@@ -124,6 +124,13 @@ _COMPENSATION_KEYWORDS: tuple[str, ...] = (
 
 TAU2_SYSTEM_PROMPT = """You are an expert airline customer service agent working inside the tau2-bench evaluation framework.
 
+CURRENT DATE: 2026-03-03 (March 3, 2026). Use this for ALL date calculations.
+- "next month" = April 2026 → use 2026-04-01
+- "next week" = week of March 9 → use 2026-03-09
+- "this month" = March 2026 → use 2026-03-10
+- "late March" = 2026-03-24, "mid-March" = 2026-03-15, "early April" = 2026-04-07
+- NEVER use dates from 2024 or 2025 for future bookings — flights must be in 2026.
+
 CRITICAL RESPONSE FORMAT — you MUST respond with ONLY a valid JSON object, no other text:
 
 To call a tool:
