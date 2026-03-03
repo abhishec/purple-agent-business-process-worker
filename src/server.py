@@ -64,11 +64,14 @@ _BOOKING_PIVOT: str = (
 #   that language closes the compensation issue and causes user to say
 #   "I appreciate you noting that, I'll call back later." Keep issue OPEN.
 #   Use a more specific date question ("What week?") to advance booking.
-# Tier 3 (prev_resp==5 ONLY): Create proactive booking momentum — act as if we've
-#   already started the search and just need one more detail (weekday/weekend).
-#   FIRES EXACTLY ONCE. At prev>=6, let the LLM agent respond naturally to the
-#   user's concern ("I want to focus on the delay"), then standard append adds the
-#   booking question. Repeating T3 = broken record = user gives up.
+# Tier 3 (prev_resp==5 ONLY): Close the delay issue DEFINITIVELY, then binary
+#   date range choice ("mid-March or late March?"). Concrete choice is easier to
+#   answer than abstract "what date?" — user just picks a half-month.
+#   FIRES EXACTLY ONCE.
+# Tier 4 (prev_resp==6, no date q): After user says "I'll call back later" —
+#   accept it gracefully, but ask them to note a rough timeframe for the file.
+#   "Just so your next call is quick" — very low-commitment framing.
+#   At prev>=7, standard append handles it.
 _COMPACT_PIVOT_T1: str = (
     "I hear you — that delay causing inconvenience was genuinely unfair, "
     "and I'm truly sorry. "
@@ -85,11 +88,20 @@ _COMPACT_PIVOT_T2: str = (
     "Even a rough idea helps me find the best flights for your group of 3!"
 )
 _COMPACT_PIVOT_T3: str = (
-    "I've actually started looking at SFO→NYC direct options for your group of 3 — "
-    "there are some great flights available. "
-    "I just need one detail to pull up the best choices for you: "
-    "are you thinking a weekday departure or a weekend? "
-    "I can have options ready for you in seconds!"
+    "Let me put the delay concern to rest right now: "
+    "HAT018 (SEA→LAS, May 11) was confirmed delayed, "
+    "and our policy's final answer is that retroactive compensation isn't available "
+    "for completed journeys — this can't be escalated or overridden, and I'm truly sorry. "
+    "Now, on to something I CAN do: "
+    "I've pulled up SFO→NYC direct options for your group of 3. "
+    "Are you looking at mid-March (around the 10th–14th) or late March (24th–28th)?"
+)
+_COMPACT_PIVOT_T4: str = (
+    "I completely understand — no rush on the booking at all. "
+    "Just so your next call goes smoothly: "
+    "would mid-March (10th–14th) or late March (24th–28th) work better "
+    "for your group's SFO→NYC trip? "
+    "I'll have the best options pre-searched and ready for you!"
 )
 # Keywords indicating the agent is ACTIVELY explaining compensation policy.
 # IMPORTANT: Only include terms that appear in policy-denial sentences.
@@ -160,11 +172,12 @@ NEVER say "feel free to call back" when a booking is still pending.
 BOOKING + DELAY COMPLAINT STRATEGY — SPECIAL CASE:
 When a customer asks to book a NEW flight AND has a delay complaint on a PREVIOUS reservation:
 - Handle the delay complaint in ONE turn: verify the delay, explain the policy, pivot to booking.
-- If the customer pushes back once: pure empathy ("I truly wish I could do more") + MORE SPECIFIC date question ("What week were you thinking?").
-- If the customer pushes back twice: create proactive momentum — "I've started looking at SFO→NYC options — just need weekday or weekend to show you the best flights!"
-- NEVER say "I've noted your concern and our team will follow up" — that language CLOSES the issue and customer says "Thanks, I'll call back." Keep issue OPEN by focusing on booking momentum.
-- NEVER promise escalation/case filing — it signals the compensation issue is "handled" and kills booking urgency.
-- If customer mentions "I'll call back": "Before you go — I've already pulled up SFO→NYC options for your group. Just need your travel week to show you the best prices!"
+- If the customer pushes back once: pure empathy ("I truly wish I could do more") + week question ("What week were you thinking?").
+- If the customer pushes back twice: close delay DEFINITIVELY ("our policy's final answer is X") + binary date choice ("mid-March or late March?")
+- If customer says "I'll call back": accept gracefully + ask "mid-March or late March to note for your file?"
+- CRITICAL: Once customer says "mid-March" or "late March" or gives ANY date hint: IMMEDIATELY call search_direct_flight (SFO→JFK, first Tuesday in that period, economy). Present the flight options and ask "Shall I book the [date] flight for your group of 3?"
+- NEVER say "I've noted your concern and our team will follow up" — that closes the issue and customer defers.
+- NEVER promise escalation/case filing — signals comp is "handled" and kills booking urgency.
 
 FORMAT RULE: The "content" field in a respond action MUST be plain natural language text ONLY. NEVER put JSON inside the "content" field. NEVER nest a JSON action inside another action.
 
@@ -260,18 +273,17 @@ def _apply_booking_pivot(context_id: str, parsed: dict) -> None:
         flush=True,
     )
 
-    # ── 3-tier compact pivot: fires when agent is explaining compensation policy ──
-    # Three different messages prevent the "broken record" effect that causes the
-    # user to give up after seeing identical responses.
+    # ── 4-tier compact pivot: fires when agent is explaining compensation policy ──
+    # Each tier fires EXACTLY ONCE to prevent broken-record repetition.
     #
     # Tier progression:
     #   T1 (prev_resp=3): first denial — empathetic but clear + booking q
-    #   T2 (prev_resp=4): user has pushed back — pure empathy + week question
-    #   T3 (prev_resp==5): ONE-TIME proactive search message + weekday/weekend q
-    #   prev_resp>=6: FALL THROUGH to standard append — let the LLM agent address
-    #     the user's concern naturally (they said "focus on the delayed flight");
-    #     the standard append ensures the booking question is still appended.
-    #     Replacing with T3 again at turns 6+ = broken record = user gives up.
+    #   T2 (prev_resp=4): user pushes back — pure empathy + "what week?" q
+    #   T3 (prev_resp=5): close delay DEFINITIVELY + binary date range choice
+    #     "mid-March or late March?" — concrete choice is easier than "what date?"
+    #   T4 (prev_resp=6): user said "I'll call back" — accept gracefully but
+    #     extract rough date framed as "noting for next call" (low commitment)
+    #   prev_resp>=7: FALL THROUGH to standard append
     if prev_responds >= 3:
         is_comp_context = any(kw in content_lower for kw in _COMPENSATION_KEYWORDS)
         if is_comp_context:
@@ -281,11 +293,11 @@ def _apply_booking_pivot(context_id: str, parsed: dict) -> None:
             elif prev_responds == 4:
                 pivot_msg = _COMPACT_PIVOT_T2
                 tier = "T2"
-            elif prev_responds == 5:  # Fire T3 EXACTLY ONCE
+            elif prev_responds == 5:
                 pivot_msg = _COMPACT_PIVOT_T3
                 tier = "T3"
             else:
-                pivot_msg = None  # prev >= 6: let agent speak, standard append handles it
+                pivot_msg = None  # prev >= 6: fall through to T4 backstop or standard append
             if pivot_msg is not None:
                 parsed["arguments"]["content"] = pivot_msg
                 print(
@@ -294,17 +306,26 @@ def _apply_booking_pivot(context_id: str, parsed: dict) -> None:
                 )
                 return
 
-    # ── Backstop: at exactly 5 responds (T3-tier), if no comp keywords triggered ──
-    # Fires when user asks a distraction question at turn 5 (e.g. "how many
-    # passengers were on the delayed reservation?") and agent answers factually
-    # without comp keywords → would miss the T3 block above.
-    # Only fires at prev==5 — at prev>=6, fall through to standard append so the
-    # LLM agent can address user concerns (like "I want to talk about the delay")
-    # without broken-record T3 repetition.
+    # ── Backstop T3: at exactly 5 responds, if no comp keywords triggered ─────
+    # Fires when user asks a distraction question at turn 5 and agent answers
+    # factually without comp keywords → would miss the T3 block above.
+    # Only fires at prev==5 — T4 handles prev==6.
     if prev_responds == 5 and not has_date_q:
         parsed["arguments"]["content"] = _COMPACT_PIVOT_T3
         print(
             f"[tau2] compact pivot backstop T3 (no date q, turn {prev_responds}) for ctx={context_id[:8]}",
+            flush=True,
+        )
+        return
+
+    # ── Backstop T4: at exactly 6 responds, no date q — last scripted chance ──
+    # Fires after user said "I'll call back" (turn 6). Accepts the deferral but
+    # asks for a rough month/week framed as "noting for the next call." Low-
+    # commitment framing: user just has to say "mid-March" rather than book now.
+    if prev_responds == 6 and not has_date_q:
+        parsed["arguments"]["content"] = _COMPACT_PIVOT_T4
+        print(
+            f"[tau2] compact pivot backstop T4 (no date q, turn {prev_responds}) for ctx={context_id[:8]}",
             flush=True,
         )
         return
