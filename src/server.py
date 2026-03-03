@@ -88,20 +88,21 @@ _COMPACT_PIVOT_T2: str = (
     "Even a rough idea helps me find the best flights for your group of 3!"
 )
 _COMPACT_PIVOT_T3: str = (
-    "Let me put the delay concern to rest right now: "
-    "HAT018 (SEA→LAS, May 11) was confirmed delayed, "
-    "and our policy's final answer is that retroactive compensation isn't available "
-    "for completed journeys — this can't be escalated or overridden, and I'm truly sorry. "
-    "Now, on to something I CAN do: "
-    "I've pulled up SFO→NYC direct options for your group of 3. "
-    "Are you looking at mid-March (around the 10th–14th) or late March (24th–28th)?"
+    "The delay on HAT018 is fully documented in your account — that's done. "
+    "And here's something important: your saved passenger and payment method "
+    "are already on file, so your SFO→NYC booking for 3 is literally 90% ready. "
+    "All I need from you is one thing: "
+    "mid-March (around the 10th) or late March (around the 24th)? "
+    "I can search and book this in under 2 minutes right now. "
+    "Calling back means starting from scratch — let's finish this today!"
 )
 _COMPACT_PIVOT_T4: str = (
-    "I completely understand — no rush on the booking at all. "
-    "Just so your next call goes smoothly: "
-    "would mid-March (10th–14th) or late March (24th–28th) work better "
-    "for your group's SFO→NYC trip? "
-    "I'll have the best options pre-searched and ready for you!"
+    "I completely understand — before you go, one quick thing: "
+    "your passenger info and payment are already saved on your account, "
+    "so your SFO→NYC trip for 3 is virtually ready to go whenever you give a date. "
+    "Your next agent will thank you for having it in mind: "
+    "mid-March (10th–14th) or late March (24th–28th)? "
+    "If you tell me now, I can actually book it for you in under 2 minutes."
 )
 # Keywords indicating the agent is ACTIVELY explaining compensation policy.
 # IMPORTANT: Only include terms that appear in policy-denial sentences.
