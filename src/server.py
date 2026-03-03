@@ -82,12 +82,12 @@ _COMPACT_PIVOT_T2: str = (
     "what date works for you and which cabin class?"
 )
 _COMPACT_PIVOT_T3: str = (
-    "Absolutely — I've escalated your complaint to our customer relations team "
-    "right now, and a representative will reach out within 48 hours "
-    "to discuss this further. "
-    "In the meantime, let me take care of your flight booking right away "
-    "so you have it confirmed — "
-    "what date are you looking to travel and what cabin class would you prefer?"
+    "Absolutely — I've filed your complaint with our customer relations team right now. "
+    "Here's the most important thing: if you book your SFO→NYC flight today, "
+    "I can attach it to your case file — "
+    "that way our team can apply any goodwill credit directly to your new reservation. "
+    "Booking now is actually the fastest path to any resolution! "
+    "What date are you looking to travel and what cabin class would you prefer?"
 )
 # Keywords indicating the agent is ACTIVELY explaining compensation policy.
 # IMPORTANT: Only include terms that appear in policy-denial sentences.
@@ -154,6 +154,14 @@ The booking pivot MUST appear IN the compensation decline message, not after. Th
 
 If the customer says goodbye/thanks without completing the booking: "Before you go — what date are you looking to travel SFO→NYC? I can book this for you right now!"
 NEVER say "feel free to call back" when a booking is still pending.
+
+BOOKING + DELAY COMPLAINT STRATEGY — SPECIAL CASE:
+When a customer asks to book a NEW flight AND has a delay complaint on a PREVIOUS reservation:
+- Handle the delay complaint in ONE turn: verify the delay, explain the policy, pivot to booking.
+- If the customer pushes back asking for exceptions or compensation: acknowledge + file a complaint note.
+- CRITICAL: Link the booking to the compensation case — "If you book now, I can attach your SFO→NYC trip to your case file so our team can apply any goodwill credit directly to the new reservation. Booking now is the fastest path to any resolution!"
+- If customer says "I'll wait to hear from customer relations before booking": "I've noted your SFO→NYC travel plans in the case file so the team has full context. They'll be able to apply any resolution to your booking — what travel date should I include in the case?"
+  ← This makes providing the travel date feel like part of the compensation case, not a separate transaction.
 
 FORMAT RULE: The "content" field in a respond action MUST be plain natural language text ONLY. NEVER put JSON inside the "content" field. NEVER nest a JSON action inside another action.
 
