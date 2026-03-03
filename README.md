@@ -1,26 +1,90 @@
 # Purple Agent
 
-An autonomous business-process AI worker that executes enterprise workflows end-to-end via a structured finite state machine, deterministic policy enforcement, and a compounding reinforcement-learning loop.
+A business-process AI agent built on the **Reflexive Agent Architecture** — a dual-process cognitive design that separates deterministic task logic from LLM reasoning to achieve reliable, auditable enterprise workflow execution.
 
-## Overview
+---
 
-Purple Agent connects to an MCP tool server and operates an 8-state FSM that enforces execution order structurally — data collection before computation, computation before policy check, policy check before an approval gate, approval gate before mutation. This eliminates the common failure modes of agentic loops: premature mutations, bypassed approval gates, and incomplete downstream chains.
+## The Problem with Pure LLM Agents
 
-## Architecture
+LLM agents fail at reliable execution in two distinct ways.
+
+**Type 1 — execution failure:** The agent understands what to do but gets the *how* wrong — wrong API formats, wrong argument types, wrong tool call sequences. Prompt engineering addresses this at the surface; the failures shift rather than disappear.
+
+**Type 2 — decision failure:** On adversarial or deceptive inputs, the agent picks the wrong action entirely — booking when it should compensate, mutating when it should read, acting when it should wait for approval.
+
+Both failure types have the same root: *reasoning and execution are entangled*. The LLM is simultaneously deciding what to do and doing it, with no separation between the two.
+
+---
+
+## Reflexive Agent Architecture
+
+Purple Agent resolves this by separating the cognitive loop into three structurally distinct layers:
+
+```
+  ┌──────────────────────────────────────────────────────────────┐
+  │                     REFLEX LAYER                             │
+  │  Fires BEFORE the LLM call. Deterministic, zero-latency.    │
+  │  Pattern detection → FSM classification → policy evaluation  │
+  │  → tool gap detection → sequence injection → pre-compute     │
+  │  For known patterns: injects actions directly, bypasses LLM  │
+  └───────────────────────────┬──────────────────────────────────┘
+                              │  if no reflex match
+  ┌───────────────────────────▼──────────────────────────────────┐
+  │                     LLM CORTEX                               │
+  │  Claude (Sonnet/Haiku). Handles novel, open-ended reasoning. │
+  │  Operates inside structural constraints set by reflex layer: │
+  │  read-only vs. mutate phase, approval gate, tool whitelist   │
+  └───────────────────────────┬──────────────────────────────────┘
+                              │
+  ┌───────────────────────────▼──────────────────────────────────┐
+  │                     VERIFICATION LAYER                       │
+  │  Post-execution. Deterministic auditing, zero-LLM.          │
+  │  Completion contract, tool coverage, math verification,      │
+  │  output validation, RL outcome recording                     │
+  └──────────────────────────────────────────────────────────────┘
+```
+
+The key design principle: **the LLM handles only what genuinely requires reasoning**. Everything that can be expressed as a rule, pattern match, or state machine is handled deterministically — before, during constraints, and after.
+
+### Reflexive Injection
+
+The most aggressive form of the reflex layer is **reflexive injection**: for known task archetypes, the agent inserts fully-formed tool-call messages directly into the conversation stream, bypassing the LLM for that turn entirely. The LLM never runs; it receives the tool result on the next turn and continues reasoning from the new state.
+
+This enables multi-phase deterministic plans to execute inside a stochastic conversation:
+
+```
+detect(trigger condition)                  → inject Phase 1 tool call
+detect(Phase 1 result in session history)  → inject Phase 2 tool call
+detect(Phase 2 result in session history)  → inject Phase 3 tool call (or final action)
+```
+
+Each phase fires on a different conversation turn, gated on results from the previous. The FSM spans multiple turns without the LLM being in the loop for any of them.
+
+### Why This Matters
+
+| Approach | Known patterns | Novel patterns | Inspectable | Incrementally improvable |
+|---|---|---|---|---|
+| Pure LLM agent | Unreliable | ✓ | No | No (retraining) |
+| Pure rule engine | ✓ | No | Yes | Yes |
+| Reflexive Agent Architecture | ✓ (deterministic) | ✓ (LLM fallback) | Yes | Yes (add reflexes) |
+
+---
+
+## Cognitive Loop: PRIME → EXECUTE → REFLECT
 
 ```
 POST /  (A2A JSON-RPC 2.0)
         │
         ▼
-    PRIME
+    PRIME  ← Reflex Layer
     ├── Privacy guard              (zero API cost)
-    ├── RL primer                  (past-task patterns)
+    ├── RL primer                  (past-task patterns injected into context)
     ├── Session context            (Haiku-compressed history)
     ├── FSM classification         (Haiku process-type detection)
     ├── Dynamic FSM synthesis      (novel process types via Haiku)
     ├── Policy evaluation          (deterministic, zero LLM)
     ├── Tool discovery             (MCP + local registry)
-    ├── Task mode detection        (read-only vs full — strips mutation tools)
+    ├── Task mode detection        (read-only vs. full — strips mutation tools)
     ├── Tool gap detection         (36 regex patterns + LLM synthesis)
     ├── HITL gate check            (mutation blocking)
     ├── Sequence hint injection    (ordered step directive — seeded + Haiku)
@@ -29,7 +93,7 @@ POST /  (A2A JSON-RPC 2.0)
     └── Finance pre-compute        (variance, SLA, proration, dispute credit)
         │
         ▼
-    EXECUTE
+    EXECUTE  ← LLM Cortex (inside structural constraints)
     ├── UCB1 bandit selects strategy: fsm | five_phase | moa
     ├── Two-phase state-gated execution:
     │     Phase A — GATHER (read-only tools; Claude cannot write)
@@ -38,11 +102,12 @@ POST /  (A2A JSON-RPC 2.0)
     ├── Anti-refusal retry         (safety-refusal override for B2B tasks)
     ├── L2 Completion Contract     (mutation_count==0 on full task → retry)
     ├── L3 Tool Coverage Check     (task-text-mentioned tools not called → retry)
-    ├── L3b Sequence Coverage      (seq_hint required steps missed → retry, prefix-resolved)
+    │     L3 Negation Guard        (tools mentioned as "do NOT call X" excluded)
+    ├── L3b Sequence Coverage      (seq_hint required steps missed → retry)
     └── Post-execution: math verification · numeric MoA · output validation · self-reflection
         │
         ▼
-    REFLECT
+    REFLECT  ← Verification Layer
     ├── FSM checkpoint saved
     ├── Session memory compressed  (async, Haiku)
     ├── RL outcome recorded        (case_log.json + quality score)
@@ -52,7 +117,11 @@ POST /  (A2A JSON-RPC 2.0)
     └── Entity memory updated
 ```
 
+---
+
 ## 8-State FSM
+
+The FSM enforces execution order structurally — data collection before computation, computation before policy check, policy check before approval, approval before mutation. This eliminates the common failure modes of agentic loops: premature mutations, bypassed approval gates, and incomplete downstream chains.
 
 | State | Mutations | Purpose |
 |---|---|---|
@@ -67,7 +136,11 @@ POST /  (A2A JSON-RPC 2.0)
 
 Read-only tasks (no action verbs, ≤120 chars) collapse to a 3-state path: `DECOMPOSE → ASSESS → COMPLETE`. Task mode classifier removes mutation tools entirely for confirmed read-only tasks.
 
-## Execution Safety Net Stack
+---
+
+## Execution Safety Net
+
+Five independent layers. Each fires independently — the structural gate prevents the problem; L2–L3b catch it if it slips through.
 
 ```
 PRIMARY:  Two-phase GATHER → MUTATE (structural separation)
@@ -79,38 +152,25 @@ L3b:      Sequence Coverage    — seq_hint required steps not called → retry 
 COMPUTE:  Math Reflection      — Haiku critiques numeric answers before MUTATE
 ```
 
-Each layer fires independently. The structural gate and two-phase execution prevent the problem; L2/L3/L3b catch it if it slips through.
+**L3 Negation Guard:** L3's tool coverage check extracts tool names from task text and retries if any required tool was not called. The negation guard prevents false positives: if the task says "do NOT call X", "avoid X", or "skip X", that tool is excluded from the required set. This handles tasks where the correct behavior is to explicitly *not* execute a particular mutation — e.g., subscription migrations where `proceed_migration` must be held until export completes.
 
-### L3 Negation Guard
+**Dynamic Approval Gate:** `hitl_guard.is_approval_tool()` detects any HITL gate tool by regex — covering `confirm_with_user`, `require_customer_signoff`, `request_manager_approval`, and all similar conventions. No hardcoded tool names anywhere in the gate logic.
 
-L3's tool coverage check extracts tool names from task text and retries if any required tool
-was not called. The negation guard prevents false positives: if the task says "do NOT call X",
-"avoid X", or "skip X", that tool is excluded from the required set. This handles tasks where
-the correct behavior is to explicitly NOT execute a particular mutation (e.g., subscription
-migrations where `proceed_migration` must be held until export completes).
+---
 
 ## Sequence Enforcer
 
-`sequence_enforcer.py` injects an ordered tool-call directive into every task's system prompt. Seeds cover 22 process types (all FSM types + hr_leave, pto_approval, leave_approval, leave_management, airline_booking, flight_booking). Haiku synthesis handles novel types. The SequenceGraph caches sequences and updates confidence via EMA (α=0.3) from RL outcomes.
+`sequence_enforcer.py` injects an ordered tool-call directive into every task's system prompt before the LLM runs. Seeds cover 22 process types; Haiku synthesis handles novel types. The `SequenceGraph` caches sequences and updates confidence via EMA (α=0.3) from RL outcomes.
 
-Each seed describes tool **intent via prefixes** (e.g. `"log_"`, `"update_budget_"`). `_resolve_tool_hints()` expands prefixes against the actual available tool set at runtime — no hardcoded tool names in the detection logic.
+Each seed describes tool intent via **prefixes** (e.g. `"log_"`, `"update_budget_"`). `_resolve_tool_hints()` expands prefixes against the actual available tool set at runtime — no hardcoded tool names in the detection logic.
 
-Approval gates (`gate: "approval"`) trigger both the directive warning AND the mechanical gate in `_direct_call()`.
-
-## Dynamic Approval Gate
-
-The approval gate is fully domain-agnostic. `hitl_guard.is_approval_tool()` detects any HITL gate tool by regex pattern — covering `confirm_with_user`, `require_customer_signoff`, `request_manager_approval`, `customer_signoff`, and all similar conventions. `find_approval_tool()` locates the gate tool at runtime from the task's actual tool set.
-
-This means no hardcoded tool names anywhere in the gate logic:
-- **Phase split**: `_split_tools_for_phases()` uses `is_approval_tool()` — approval tool always lands in Phase B
-- **Structural gate**: `_direct_call()` blocks mutations until the dynamically-resolved `_approval_tool_name` fires
-- **Tool classification**: `_is_write_tool()` excludes approval tools (they don't mutate DB state) and any tool ending with `_test`, `_report`, `_analysis`, `_audit` (analysis/compute, not mutations)
+---
 
 ## Component Reference
 
 | Module | Role |
 |---|---|
-| `server.py` | FastAPI application; A2A JSON-RPC 2.0 handler |
+| `server.py` | FastAPI application; A2A JSON-RPC 2.0 handler; reflexive injection layer |
 | `worker_brain.py` | Core cognitive loop: PRIME / EXECUTE / REFLECT |
 | `fsm_runner.py` | 8-state FSM engine; 15 built-in process templates |
 | `dynamic_fsm.py` | Haiku-based FSM synthesizer for unknown process types |
@@ -123,7 +183,7 @@ This means no hardcoded tool names anywhere in the gate logic:
 | `compute_verifier.py` | COMPUTE-state arithmetic audit; correction pass before MUTATE |
 | `self_reflection.py` | Answer completeness scoring; improvement pass if below threshold |
 | `hitl_guard.py` | Tool classification (read / compute / mutate); blocks mutations at APPROVAL_GATE |
-| `sequence_enforcer.py` | Ordered tool-call directives; 21 seeded process types; Haiku synthesis fallback |
+| `sequence_enforcer.py` | Ordered tool-call directives; 22 seeded process types; Haiku synthesis fallback |
 | `task_mode_classifier.py` | Deterministic read-only detection; strips mutation tools from read-only tasks |
 | `smart_classifier.py` | Haiku process-type classification with keyword fallback |
 | `policy_checker.py` | Deterministic policy rule evaluation; supports `&&`, `\|\|`, `!`, comparisons |
@@ -143,6 +203,8 @@ This means no hardcoded tool names anywhere in the gate logic:
 | `privacy_guard.py` | PII and credential detection before any API call |
 | `paginated_tools.py` | Cursor-loop bulk data fetching across all pagination styles |
 
+---
+
 ## Requirements
 
 Python 3.11+
@@ -155,6 +217,8 @@ httpx>=0.27
 pydantic>=2.0
 ```
 
+---
+
 ## Configuration
 
 | Variable | Required | Default | Description |
@@ -166,6 +230,8 @@ pydantic>=2.0
 | `TASK_TIMEOUT` | No | `120` | Seconds per task |
 | `RL_CACHE_DIR` | No | `/app` | Directory for JSON state files |
 
+---
+
 ## Running
 
 ```bash
@@ -174,6 +240,8 @@ export ANTHROPIC_API_KEY=sk-ant-...
 export GREEN_AGENT_MCP_URL=http://localhost:9009
 python main.py --host 0.0.0.0 --port 9010
 ```
+
+---
 
 ## Testing
 
@@ -185,13 +253,13 @@ python simulate_competition.py        # 19 checks: math, FSM, bandit, schema, br
 python simulate_phase15_16.py         # 82 checks: seeds, gate, L3b, dynamic approval, SaaS migration, L3 negation
 ```
 
-Both suites run without a live LLM or MCP server — they test deterministic logic only.
+Both suites test deterministic logic only — no live LLM or MCP server required.
+
+---
 
 ## API
 
 All requests use A2A JSON-RPC 2.0.
-
-**Endpoints**
 
 | Endpoint | Method | Description |
 |---|---|---|
@@ -199,8 +267,6 @@ All requests use A2A JSON-RPC 2.0.
 | `/.well-known/agent-card.json` | GET | Agent capability declaration |
 | `/health` | GET | Health check |
 | `/rl/status` | GET | Case log, bandit state, tool registry, FSM cache |
-
-**Request format**
 
 ```json
 {
@@ -222,6 +288,8 @@ All requests use A2A JSON-RPC 2.0.
 }
 ```
 
+---
+
 ## Tech Stack
 
 - **Runtime:** Python 3.11, FastAPI, uvicorn
@@ -231,6 +299,8 @@ All requests use A2A JSON-RPC 2.0.
 - **Numerics:** `decimal.Decimal` in sandboxed tool execution
 - **RL:** UCB1 bandit + case log + quality scoring + knowledge extraction + sequence graph
 - **Storage:** Local JSON (tool registry, bandit state, sequence graph, entity memory, knowledge base, case log)
+
+---
 
 ## License
 
