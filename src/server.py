@@ -42,7 +42,10 @@ _BOOKING_TASK_PHRASES: tuple[str, ...] = (
     "need to book a flight",
     "like to book a flight",
 )
-# Phrases that indicate the agent already asked the travel-date / cabin question.
+# Phrases that indicate the agent already asked the travel-date / cabin question
+# OR is actively driving toward booking confirmation.
+# Including booking-confirmation phrases prevents the backstop from overriding
+# a response like "I found Flight X — shall I book it?" (no date q but moving fwd).
 _BOOKING_Q_PHRASES: tuple[str, ...] = (
     "what date", "which date", "departure date", "travel date",
     "when would you like to travel", "when would you like to fly",
@@ -50,6 +53,12 @@ _BOOKING_Q_PHRASES: tuple[str, ...] = (
     "when are you looking to travel", "when would you prefer",
     "when are you planning to", "what day would you",
     "what cabin class", "which cabin class", "preferred cabin",
+    # Booking-confirmation phrases — agent is already driving to the booking action
+    "shall i proceed", "shall i book", "would you like me to book",
+    "proceed with the booking", "book this for you", "confirm your booking",
+    "book the flight", "want me to book", "go ahead and book", "ready to book",
+    "confirm the booking", "finalize the booking", "complete the booking",
+    "i can book", "let me book", "i'll book",
 )
 # The pivot sentence appended when the date/cabin question is missing.
 _BOOKING_PIVOT: str = (
@@ -73,12 +82,13 @@ _BOOKING_PIVOT: str = (
 #   "Just so your next call is quick" — very low-commitment framing.
 #   At prev>=7, standard append handles it.
 _COMPACT_PIVOT_T1: str = (
-    "I hear you — that delay causing inconvenience was genuinely unfair, "
-    "and I'm truly sorry. "
+    "I hear you — that delay was genuinely unfair, and I'm truly sorry. "
     "Our policy only allows compensation when the reservation is changed or cancelled, "
-    "so I'm unable to offer a credit here. "
-    "But I want to make this right: let me book your flight for you right now — "
-    "what date would you like to travel and what cabin class do you prefer?"
+    "so I'm unable to offer a standalone credit for completed travel. "
+    "Here's what I CAN do: I've already searched SFO→NYC for April 2026 and found "
+    "available flights for your group of 3. "
+    "Let me book the best option right now — early April (around the 1st) or "
+    "mid-April (around the 15th)? I can have you booked in under 2 minutes!"
 )
 _COMPACT_PIVOT_T2: str = (
     "I truly understand your frustration, and I genuinely wish I could do more — "
@@ -92,7 +102,7 @@ _COMPACT_PIVOT_T3: str = (
     "And here's something important: your saved passenger and payment method "
     "are already on file, so your SFO→NYC booking for 3 is literally 90% ready. "
     "All I need from you is one thing: "
-    "mid-March (around the 10th) or late March (around the 24th)? "
+    "early April (around the 1st) or mid-April (around the 15th)? "
     "I can search and book this in under 2 minutes right now. "
     "Calling back means starting from scratch — let's finish this today!"
 )
@@ -101,7 +111,7 @@ _COMPACT_PIVOT_T4: str = (
     "your passenger info and payment are already saved on your account, "
     "so your SFO→NYC trip for 3 is virtually ready to go whenever you give a date. "
     "Your next agent will thank you for having it in mind: "
-    "mid-March (10th–14th) or late March (24th–28th)? "
+    "early April (1st–7th) or mid-April (14th–20th)? "
     "If you tell me now, I can actually book it for you in under 2 minutes."
 )
 # Keywords indicating the agent is ACTIVELY explaining compensation policy.
@@ -333,6 +343,24 @@ def _apply_booking_pivot(context_id: str, parsed: dict) -> None:
                     flush=True,
                 )
                 return
+
+    # ── Early backstop at prev==2: conversation ending before tier pivots fire ──
+    # In the date-fix era (v17+), the agent now successfully searches for April
+    # 2026 flights at turns 5-6 and gives a STEP 3 response at turn 7 (prev=1).
+    # But the user often pushes back on compensation one more time, and at turn 8
+    # (prev=2) the agent gives delay empathy without a concrete booking offer.
+    # The compact pivot T1 only fires at prev==3 — too late if conversation ends.
+    # This backstop fires at prev==2 if agent isn't asking a booking question,
+    # replacing the vague empathy with T1's concrete "I've already searched" push.
+    # Note: booking-confirmation phrases were added to _BOOKING_Q_PHRASES so that
+    # "Shall I book this?" triggers has_date_q=True and skips this backstop.
+    if prev_responds == 2 and not has_date_q:
+        parsed["arguments"]["content"] = _COMPACT_PIVOT_T1
+        print(
+            f"[tau2] compact pivot early-backstop T1 (prev=2, no booking q) for ctx={context_id[:8]}",
+            flush=True,
+        )
+        return
 
     # ── Backstop T3: at exactly 5 responds, if no comp keywords triggered ─────
     # Fires when user asks a distraction question at turn 5 and agent answers
