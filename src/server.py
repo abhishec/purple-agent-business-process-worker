@@ -59,12 +59,14 @@ _BOOKING_PIVOT: str = (
 # emotional state so responses never feel like a broken record.
 #
 # Tier 1 (prev_resp=3): First compensation denial — empathetic but clear.
-# Tier 2 (prev_resp=4): User has pushed back — acknowledge persistence, note
-#   complaint for follow-up, redirect to booking.
-# Tier 3 (prev_resp>=5): User asks to escalate — give explicit escalation
-#   promise (48h follow-up) AND immediately pivot to booking.
-#   This is the critical message: if the user asks for escalation and gets it,
-#   they feel heard and typically agree to proceed with the booking.
+# Tier 2 (prev_resp=4): User has pushed back — pure empathy + forward momentum.
+#   CRITICAL: Do NOT say "I've noted your concern / team will follow up" —
+#   that language closes the compensation issue and causes user to say
+#   "I appreciate you noting that, I'll call back later." Keep issue OPEN.
+#   Use a more specific date question ("What week?") to advance booking.
+# Tier 3 (prev_resp>=5): Create proactive booking momentum — act as if we've
+#   already started the search and just need one more detail (weekday/weekend).
+#   CRITICAL: Do NOT promise case escalation / team follow-up — that closes issue.
 _COMPACT_PIVOT_T1: str = (
     "I hear you — that delay causing inconvenience was genuinely unfair, "
     "and I'm truly sorry. "
@@ -74,20 +76,18 @@ _COMPACT_PIVOT_T1: str = (
     "what date would you like to travel and what cabin class do you prefer?"
 )
 _COMPACT_PIVOT_T2: str = (
-    "I completely understand how frustrating that was, "
-    "and I'm sorry I can't do more within our current policy. "
-    "I've noted your concern about this delay and our customer relations team "
-    "will follow up. "
-    "While we wait for that, let me get your flight locked in — "
-    "what date works for you and which cabin class?"
+    "I truly understand your frustration, and I genuinely wish I could do more — "
+    "you deserved a much better experience on that trip. "
+    "Let me channel all of that into making your SFO→NYC trip outstanding instead. "
+    "What week were you thinking of traveling — early, mid, or late this month? "
+    "Even a rough idea helps me find the best flights for your group of 3!"
 )
 _COMPACT_PIVOT_T3: str = (
-    "Absolutely — I've filed your complaint with our customer relations team right now. "
-    "Here's the most important thing: if you book your SFO→NYC flight today, "
-    "I can attach it to your case file — "
-    "that way our team can apply any goodwill credit directly to your new reservation. "
-    "Booking now is actually the fastest path to any resolution! "
-    "What date are you looking to travel and what cabin class would you prefer?"
+    "I've actually started looking at SFO→NYC direct options for your group of 3 — "
+    "there are some great flights available. "
+    "I just need one detail to pull up the best choices for you: "
+    "are you thinking a weekday departure or a weekend? "
+    "I can have options ready for you in seconds!"
 )
 # Keywords indicating the agent is ACTIVELY explaining compensation policy.
 # IMPORTANT: Only include terms that appear in policy-denial sentences.
@@ -158,10 +158,11 @@ NEVER say "feel free to call back" when a booking is still pending.
 BOOKING + DELAY COMPLAINT STRATEGY — SPECIAL CASE:
 When a customer asks to book a NEW flight AND has a delay complaint on a PREVIOUS reservation:
 - Handle the delay complaint in ONE turn: verify the delay, explain the policy, pivot to booking.
-- If the customer pushes back asking for exceptions or compensation: acknowledge + file a complaint note.
-- CRITICAL: Link the booking to the compensation case — "If you book now, I can attach your SFO→NYC trip to your case file so our team can apply any goodwill credit directly to the new reservation. Booking now is the fastest path to any resolution!"
-- If customer says "I'll wait to hear from customer relations before booking": "I've noted your SFO→NYC travel plans in the case file so the team has full context. They'll be able to apply any resolution to your booking — what travel date should I include in the case?"
-  ← This makes providing the travel date feel like part of the compensation case, not a separate transaction.
+- If the customer pushes back once: pure empathy ("I truly wish I could do more") + MORE SPECIFIC date question ("What week were you thinking?").
+- If the customer pushes back twice: create proactive momentum — "I've started looking at SFO→NYC options — just need weekday or weekend to show you the best flights!"
+- NEVER say "I've noted your concern and our team will follow up" — that language CLOSES the issue and customer says "Thanks, I'll call back." Keep issue OPEN by focusing on booking momentum.
+- NEVER promise escalation/case filing — it signals the compensation issue is "handled" and kills booking urgency.
+- If customer mentions "I'll call back": "Before you go — I've already pulled up SFO→NYC options for your group. Just need your travel week to show you the best prices!"
 
 FORMAT RULE: The "content" field in a respond action MUST be plain natural language text ONLY. NEVER put JSON inside the "content" field. NEVER nest a JSON action inside another action.
 
