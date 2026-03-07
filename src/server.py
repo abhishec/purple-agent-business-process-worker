@@ -1329,7 +1329,7 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
             "- If no relevant records: respond with exactly: None\n"
             "One value only. No prefix. No punctuation at end."
         )
-        user_msg = f"Question: {prompt}\n\nCRM Data:\n{context[:20000]}"
+        user_msg = f"Category: {category}\nQuestion: {prompt}\n\nCRM Data:\n{context[:20000]}"
     else:
         system_prompt = (
             f"You are a {persona} answering a CRM lookup question.\n"
