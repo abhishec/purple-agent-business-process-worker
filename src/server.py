@@ -1260,10 +1260,9 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
     import anthropic as _anthropic
 
     is_private = category in _CRM_PRIVATE_CATEGORIES
-    # Privacy refusals are short and cheap — always use Haiku; lookups use DAAO-selected model
-    resolved_model = FAST_MODEL if is_private else (model or FALLBACK_MODEL)
-
     is_text_qa = category in _CRM_TEXT_CATEGORIES
+    # Privacy refusals → Haiku (fast, cheap). Text QA & lookups → Sonnet (reasoning needed).
+    resolved_model = FAST_MODEL if is_private else FALLBACK_MODEL
 
     if is_private:
         system_prompt = (
@@ -1306,7 +1305,7 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
     max_tok = 512 if is_text_qa else 256
     client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     resp = await client.messages.create(
-        model=resolved_model,  # DAAO-selected model — not hardcoded
+        model=resolved_model,  # Sonnet for all non-privacy tasks
         max_tokens=max_tok,
         system=system_prompt,
         messages=[{"role": "user", "content": user_msg}],
