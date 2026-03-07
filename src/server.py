@@ -1383,9 +1383,10 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
                     print(f"[crm] exec fallback no-data cat={category} → None", flush=True)
                     answer = "None"
                 else:
-                    # Has data but code failed — try llm_direct
+                    # Has data but code failed — try llm_direct with Sonnet
                     print(f"[crm] exec fallback for cat={category}", flush=True)
-                    answer = await _crm_llm_direct(prompt, context, persona, category, model=model)
+                    # Use Sonnet (not DAAO model) for analytics fallback too
+                    answer = await _crm_llm_direct(prompt, context, persona, category, model=FALLBACK_MODEL)
                     strategy = "llm_direct"  # update strategy for reward signal
         else:
             answer = await _crm_llm_direct(prompt, context, persona, category, model=model)
