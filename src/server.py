@@ -924,11 +924,19 @@ def _is_tau2_format(text: str) -> bool:
 
 
 def _is_crm_task_format(text: str) -> bool:
-    """Detect CRMArenaPro task: JSON with type=crm_task embedded in message."""
+    """Detect CRMArenaPro task: JSON with crm_task type or task_category field."""
     stripped = text.strip()
     if not stripped.startswith('{'):
         return False
-    return '"crm_task"' in stripped[:200] or "'crm_task'" in stripped[:200]
+    # Primary: explicit crm_task type marker
+    first_200 = stripped[:200]
+    if '"crm_task"' in first_200 or "'crm_task'" in first_200:
+        return True
+    # Secondary: task_category field is a reliable CRM-only indicator
+    # (tau2-bench uses different JSON with tool schemas)
+    if '"task_category"' in first_200 or '"required_context"' in first_200:
+        return True
+    return False
 
 
 # ── Brain + Router (brainoscorelight) ─────────────────────────────────────────
