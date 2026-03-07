@@ -1182,16 +1182,29 @@ Use statistics.mean() for averages, statistics.median() for medians.
 Use _safe_date(d) for robust date parsing (handles ISO8601, timezones, YYYY-MM-DD, MM/DD/YYYY).
 
 Robustness rules:
-- Parse JSON safely:
-  try: data = json.loads(context_data)
-  except: stripped = context_data[re.search(r'[\[{]', context_data).start():] if re.search(r'[\[{]', context_data) else '[]'; data = json.loads(stripped)
+- Parse data in this order (try each until one works):
+  1. JSON (double-quotes): try: data = json.loads(context_data)
+  2. Regex-stripped JSON: m=re.search(r'[\[{]',context_data); data=json.loads(context_data[m.start():]) if m else None
+  3. Python literal (single-quotes): import ast; data=ast.literal_eval(context_data)
+  4. CSV: reader=csv.DictReader(io.StringIO(context_data)); data=list(reader)
+  5. Fallback: data=[]
+  Full robust parse:
+    import ast as _ast
+    try: data = json.loads(context_data)
+    except:
+        try:
+            m=re.search(r'[\[{]',context_data); data=json.loads(context_data[m.start():]) if m else (_ for _ in ()).throw(ValueError())
+        except:
+            try: data=_ast.literal_eval(context_data)
+            except:
+                try: data=list(csv.DictReader(io.StringIO(context_data)))
+                except: data=[]
 - If data is a dict (not list), find the list with the most records:
   if isinstance(data, dict): lists = [(k,v) for k,v in data.items() if isinstance(v,list)]; data = max(lists, key=lambda x: len(x[1]))[1] if lists else [data]
 - After parsing, ensure data is a list: if not isinstance(data, list): data = [data]
 - Inspect first record's keys to find actual field names: keys = list(data[0].keys()) if data else []
 - When accessing dict keys, try aliases: record.get('OwnerId') or record.get('AssignedAgent')
 - Check for None/null values before arithmetic: skip records where field is None or field == ''
-- For CSV: use only if JSON parse completely fails and data starts with a header row
 - Integer output: if result is a whole number, use int(result) to avoid '3.0' instead of '3'
 
 Field aliases (handle both names): AssignedAgent=OwnerId, ClientId=AccountId,
@@ -1358,7 +1371,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
     # Prepend safe imports + context_data binding
     # _safe_date: robust date parser that handles ISO8601, timezones, simple YYYY-MM-DD
     _SANDBOX_HEADER = (
-        "import json, re, io, csv, datetime, math, statistics, itertools\n"
+        "import json, re, io, csv, ast, datetime, math, statistics, itertools\n"
         "from collections import Counter, defaultdict\n"
         "from operator import itemgetter\n"
         "from datetime import datetime as dt, timedelta\n"
