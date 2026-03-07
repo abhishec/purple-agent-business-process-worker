@@ -1373,12 +1373,14 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
     else:
         strategy = "llm_direct"
 
-    # ── Hard override: analytics MUST use code_exec ────────────────────────
-    # The UCB1 Router starts in explore mode and may suggest llm_direct for
-    # analytical categories. Force code_exec for all analytics — Python code
-    # execution is always more accurate than direct LLM for numeric queries.
+    # ── Hard overrides: force correct strategy per category type ───────────
+    # The UCB1 Router starts in explore mode and may suggest wrong strategies.
+    # - Analytics MUST use code_exec (Python > LLM for numeric aggregation)
+    # - Text QA MUST use llm_direct (no Python needed for reading comprehension)
     if category in _CRM_ANALYTICAL_CATEGORIES:
         strategy = "code_exec"
+    elif category in _CRM_TEXT_CATEGORIES:
+        strategy = "llm_direct"
 
     print(f"[crm] cat={category} strategy={strategy} model={model}", flush=True)
 
