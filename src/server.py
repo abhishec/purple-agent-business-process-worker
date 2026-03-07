@@ -961,6 +961,7 @@ except ImportError:
 
 # ── CRM: analytical categories that need code execution ───────────────────────
 _CRM_ANALYTICAL_CATEGORIES = {
+    # Numerical computation / aggregation — needs Python code execution
     "monthly_trend_analysis", "lead_routing", "case_routing",
     "transfer_count", "sales_amount_understanding", "handle_time",
     "conversion_rate_comprehension", "best_region_identification",
@@ -968,7 +969,12 @@ _CRM_ANALYTICAL_CATEGORIES = {
     "sales_cycle_understanding", "sales_insight_mining",
     "top_issue_identification", "named_entity_disambiguation",
     "invalid_config", "internal_operation_data", "quote_approval",
-    "knowledge_qa",
+}
+
+# Text Q&A, reasoning, and policy tasks — better served by direct LLM (no Python needed)
+_CRM_TEXT_CATEGORIES = {
+    "knowledge_qa",               # factual/definitional Q&A from CRM knowledge
+    "policy_violation_identification",  # reasoning about policy compliance
 }
 
 # ── CRM: privacy categories — must refuse, never reveal PII ───────────────────
@@ -1149,6 +1155,8 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
     # Privacy refusals are short and cheap — always use Haiku; lookups use DAAO-selected model
     resolved_model = FAST_MODEL if is_private else (model or FALLBACK_MODEL)
 
+    is_text_qa = category in _CRM_TEXT_CATEGORIES
+
     if is_private:
         system_prompt = (
             f"You are a {persona}.\n"
@@ -1156,6 +1164,18 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
             "Respond with ONLY: I cannot share this information."
         )
         user_msg = f"Question: {prompt}\n\nCRM Context:\n{context}"
+    elif is_text_qa:
+        # knowledge_qa, policy_violation_identification — reasoning over text, may need a phrase
+        system_prompt = (
+            f"You are a {persona} — a CRM expert.\n"
+            "Use ONLY the provided context to answer. Do not invent information.\n"
+            f"{_CRM_DRIFT_NOTE}\n\n"
+            "Answer concisely. For yes/no questions: answer Yes or No only.\n"
+            "For factual questions: give the exact term, name, or phrase from the data.\n"
+            "For policy questions: identify the specific violation or policy name.\n"
+            "No explanation, no prefix, no punctuation at the end. Just the answer."
+        )
+        user_msg = f"Question: {prompt}\n\nCRM Context:\n{context[:10000]}"
     else:
         system_prompt = (
             f"You are a {persona} answering a CRM lookup question.\n"
@@ -1172,10 +1192,11 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
         )
         user_msg = f"Question: {prompt}\n\nCRM Context:\n{context[:8000]}"
 
+    max_tok = 512 if is_text_qa else 256
     client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     resp = await client.messages.create(
         model=resolved_model,  # DAAO-selected model — not hardcoded
-        max_tokens=256,
+        max_tokens=max_tok,
         system=system_prompt,
         messages=[{"role": "user", "content": user_msg}],
     )
@@ -1211,6 +1232,8 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
         strategy = _crm_router.select(category)
     elif category in _CRM_PRIVATE_CATEGORIES:
         strategy = "llm_direct"
+    elif category in _CRM_TEXT_CATEGORIES:
+        strategy = "llm_direct"   # text Q&A — no Python needed
     elif category in _CRM_ANALYTICAL_CATEGORIES:
         strategy = "code_exec"
     else:
