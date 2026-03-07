@@ -1323,7 +1323,7 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
             "If the context does not contain the answer, respond with exactly: None\n"
             "No explanation, no prefix, no punctuation at the end. Just the answer."
         )
-        user_msg = f"Question: {prompt}\n\nContext:\n{context[:16000]}"
+        user_msg = f"Question: {prompt}\n\nContext:\n{context[:32000]}"
     elif category in _CRM_ANALYTICAL_CATEGORIES:
         # Analytical fallback: code_exec failed, ask Sonnet to reason directly
         system_prompt = (
