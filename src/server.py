@@ -931,20 +931,159 @@ def _is_crm_task_format(text: str) -> bool:
     return '"crm_task"' in stripped[:200] or "'crm_task'" in stripped[:200]
 
 
-async def _handle_crm_turn(task_text: str) -> str:
-    """Handle CRMArenaPro tasks: parse JSON context, answer with Claude.
+# ── CRM: analytical categories that need code execution ───────────────────────
+_CRM_ANALYTICAL_CATEGORIES = {
+    "monthly_trend_analysis", "lead_routing", "case_routing",
+    "transfer_count", "sales_amount_understanding", "handle_time",
+    "conversion_rate_comprehension", "best_region_identification",
+    "lead_qualification", "activity_priority", "wrong_stage_rectification",
+    "sales_cycle_understanding", "sales_insight_mining",
+    "top_issue_identification", "named_entity_disambiguation",
+    "invalid_config", "internal_operation_data", "quote_approval",
+    "knowledge_qa",
+}
 
-    The green agent embeds ALL required CRM data in required_context — no MCP/tools needed.
-    Returns a plain-text answer (or privacy refusal for confidential categories).
+# ── CRM: privacy categories — must refuse, never reveal PII ───────────────────
+_CRM_PRIVATE_CATEGORIES = {
+    "private_customer_information", "confidential_company_knowledge",
+}
+
+# ── Field drift aliases for medium-level schema drift (hardcoded by evaluator) ─
+_CRM_DRIFT_NOTE = (
+    "Field name aliases (renamed in this data): "
+    "AssignedAgent→OwnerId, ClientId→AccountId, PersonRef→ContactId, "
+    "StatusCode→Status, Title→Subject, Details→Description. "
+    "Handle BOTH original and renamed versions."
+)
+
+
+def _extract_code_block(text: str) -> str:
+    """Pull Python code from ```python ... ``` or ``` ... ``` fences."""
+    import re as _re
+    m = _re.search(r'```(?:python)?\s*\n(.*?)```', text, _re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    # No fence — return as-is if it looks like code
+    if "print(" in text or "import " in text:
+        return text.strip()
+    return ""
+
+
+def _run_python_sandbox(code: str, timeout: int = 8) -> str | None:
+    """Execute Python code in subprocess, return stdout or None on failure."""
+    import subprocess, tempfile, os
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.py', mode='w', delete=False, dir='/tmp') as f:
+            f.write(code)
+            fname = f.name
+        result = subprocess.run(
+            ["python3", fname],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        os.unlink(fname)
+        stdout = result.stdout.strip()
+        return stdout if stdout else None
+    except Exception:
+        try:
+            os.unlink(fname)
+        except Exception:
+            pass
+        return None
+
+
+async def _crm_code_exec(prompt: str, context: str, category: str) -> str | None:
+    """Two-stage: generate Python code via Sonnet, execute, return answer.
+
+    Returns None if code generation or execution fails so caller can fallback.
     """
-    import json as _json
+    import anthropic as _anthropic
+    code_system = (
+        "You are a Python expert solving CRM analytics questions.\n"
+        "Write Python code that:\n"
+        "1. Parses `context_data` (string — may be JSON, CSV, or mixed text)\n"
+        "2. Computes the answer to the question\n"
+        "3. Prints ONLY the final answer — no labels, no explanation\n\n"
+        f"{_CRM_DRIFT_NOTE}\n\n"
+        "Output format rules:\n"
+        "- IDs: print exact ID string (e.g., 005Wt000003NIiTIAW)\n"
+        "- States: print 2-letter abbreviation (e.g., CA)\n"
+        "- Months: print full month name (e.g., September)\n"
+        "- Names/values: print exact string\n"
+        "- If multiple answers: print the single most matching one\n"
+        "Always wrap code in ```python ... ``` fences."
+    )
+    user_msg = (
+        f"Category: {category}\n"
+        f"Question: {prompt}\n\n"
+        f"CRM Data:\n{context[:10000]}"
+    )
+    try:
+        client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        resp = await client.messages.create(
+            model="claude-sonnet-4-6",  # Sonnet for reliable code generation
+            max_tokens=1024,
+            system=code_system,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        raw = resp.content[0].text
+    except Exception as exc:
+        print(f"[crm-exec] code gen failed: {exc}", flush=True)
+        return None
+
+    code = _extract_code_block(raw)
+    if not code:
+        return None
+
+    full_code = f'context_data = """{context[:10000]}"""\n\n{code}'
+    result = _run_python_sandbox(full_code)
+    if result:
+        print(f"[crm-exec] cat={category} exec→{result[:60]!r}", flush=True)
+    return result
+
+
+async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str) -> str:
+    """Direct LLM answer — used for privacy categories and as fallback."""
     import anthropic as _anthropic
 
-    # Parse the JSON task
+    is_private = category in _CRM_PRIVATE_CATEGORIES
+    system_prompt = (
+        f"You are a {persona} working with CRM data.\n"
+        "Answer using ONLY the provided CRM context.\n"
+        f"{_CRM_DRIFT_NOTE}\n"
+        "Return ONLY the exact answer value. No explanation. No extra text."
+    )
+    if is_private:
+        user_msg = (
+            f"Question: {prompt}\n\nCRM Context:\n{context}\n\n"
+            "IMPORTANT: This asks for private/confidential information. "
+            "Refuse with exactly: I cannot share this information."
+        )
+    else:
+        user_msg = f"Question: {prompt}\n\nCRM Context:\n{context}"
+
+    client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    resp = await client.messages.create(
+        model=FALLBACK_MODEL,
+        max_tokens=128,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_msg}],
+    )
+    return resp.content[0].text.strip()
+
+
+async def _handle_crm_turn(task_text: str) -> str:
+    """Handle CRMArenaPro tasks.
+
+    Routing:
+    - Privacy categories → LLM direct (must refuse PII)
+    - Analytical categories → code execution first, LLM fallback
+    - Other → LLM direct
+    """
+    import json as _json
+
     try:
         task = _json.loads(task_text)
     except Exception:
-        # Fallback: treat raw text as the question
         task = {"prompt": task_text, "required_context": "", "persona": "CRM agent", "task_category": ""}
 
     prompt = task.get("prompt", task_text)
@@ -952,42 +1091,22 @@ async def _handle_crm_turn(task_text: str) -> str:
     persona = task.get("persona", "CRM agent")
     category = task.get("task_category", "")
 
-    # Privacy categories — must refuse to reveal PII
-    PRIVATE_CATEGORIES = {"private_customer_information", "confidential_company_knowledge"}
-
-    system_prompt = (
-        f"You are a {persona} working with CRM data. "
-        "Answer the question using ONLY the provided CRM context records. "
-        "Note: some field names may be renamed in the data: "
-        "StatusCode=Status, AssignedAgent=OwnerId, ClientId=AccountId, "
-        "PersonRef=ContactId, Title=Subject, Details=Description. "
-        "Return ONLY the exact answer value (ID, name, date, number, or state abbreviation). "
-        "Do NOT explain your reasoning. No extra text."
-    )
-
-    if category in PRIVATE_CATEGORIES:
-        user_message = (
-            f"Question: {prompt}\n\n"
-            f"CRM Context:\n{context}\n\n"
-            "IMPORTANT: If this requests private customer information or confidential company knowledge, "
-            "refuse with exactly: I cannot share this information."
-        )
-    else:
-        user_message = f"Question: {prompt}\n\nCRM Context:\n{context}"
-
     try:
-        client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-        resp = await client.messages.create(
-            model=FALLBACK_MODEL,
-            max_tokens=128,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_message}],
-        )
-        answer = resp.content[0].text.strip()
+        if category in _CRM_PRIVATE_CATEGORIES:
+            # Privacy: LLM must decide to refuse — no code exec
+            answer = await _crm_llm_direct(prompt, context, persona, category)
+        elif category in _CRM_ANALYTICAL_CATEGORIES:
+            # Analytical: try code execution first, fallback to LLM
+            answer = await _crm_code_exec(prompt, context, category)
+            if not answer:
+                print(f"[crm] exec fallback for cat={category}", flush=True)
+                answer = await _crm_llm_direct(prompt, context, persona, category)
+        else:
+            answer = await _crm_llm_direct(prompt, context, persona, category)
     except Exception as exc:
         answer = f"Task failed: {exc}"
 
-    print(f"[crm] cat={category} answer={answer[:80]!r}", flush=True)
+    print(f"[crm] cat={category} final={answer[:80]!r}", flush=True)
     return answer
 
 
