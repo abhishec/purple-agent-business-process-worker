@@ -923,6 +923,74 @@ def _is_tau2_format(text: str) -> bool:
     )
 
 
+def _is_crm_task_format(text: str) -> bool:
+    """Detect CRMArenaPro task: JSON with type=crm_task embedded in message."""
+    stripped = text.strip()
+    if not stripped.startswith('{'):
+        return False
+    return '"crm_task"' in stripped[:200] or "'crm_task'" in stripped[:200]
+
+
+async def _handle_crm_turn(task_text: str) -> str:
+    """Handle CRMArenaPro tasks: parse JSON context, answer with Claude.
+
+    The green agent embeds ALL required CRM data in required_context — no MCP/tools needed.
+    Returns a plain-text answer (or privacy refusal for confidential categories).
+    """
+    import json as _json
+    import anthropic as _anthropic
+
+    # Parse the JSON task
+    try:
+        task = _json.loads(task_text)
+    except Exception:
+        # Fallback: treat raw text as the question
+        task = {"prompt": task_text, "required_context": "", "persona": "CRM agent", "task_category": ""}
+
+    prompt = task.get("prompt", task_text)
+    context = task.get("required_context", "")
+    persona = task.get("persona", "CRM agent")
+    category = task.get("task_category", "")
+
+    # Privacy categories — must refuse to reveal PII
+    PRIVATE_CATEGORIES = {"private_customer_information", "confidential_company_knowledge"}
+
+    system_prompt = (
+        f"You are a {persona} working with CRM data. "
+        "Answer the question using ONLY the provided CRM context records. "
+        "Note: some field names may be renamed in the data: "
+        "StatusCode=Status, AssignedAgent=OwnerId, ClientId=AccountId, "
+        "PersonRef=ContactId, Title=Subject, Details=Description. "
+        "Return ONLY the exact answer value (ID, name, date, number, or state abbreviation). "
+        "Do NOT explain your reasoning. No extra text."
+    )
+
+    if category in PRIVATE_CATEGORIES:
+        user_message = (
+            f"Question: {prompt}\n\n"
+            f"CRM Context:\n{context}\n\n"
+            "IMPORTANT: If this requests private customer information or confidential company knowledge, "
+            "refuse with exactly: I cannot share this information."
+        )
+    else:
+        user_message = f"Question: {prompt}\n\nCRM Context:\n{context}"
+
+    try:
+        client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        resp = await client.messages.create(
+            model=FALLBACK_MODEL,
+            max_tokens=128,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        answer = resp.content[0].text.strip()
+    except Exception as exc:
+        answer = f"Task failed: {exc}"
+
+    print(f"[crm] cat={category} answer={answer[:80]!r}", flush=True)
+    return answer
+
+
 def _evict_stale_tau2_sessions() -> None:
     """Remove sessions not accessed in the last _TAU2_SESSION_TTL_SEC seconds.
 
@@ -1526,6 +1594,9 @@ async def a2a_handler(request: Request):
         if context_id in _tau2_sessions or _is_tau2_format(task_text):
             print(f"[tau2] routing context_id={context_id[:8]} to tau2 handler", flush=True)
             answer = await _handle_tau2_turn(context_id, task_text)
+        elif _is_crm_task_format(task_text):
+            print(f"[crm] routing context_id={context_id[:8]} to crm handler", flush=True)
+            answer = await _handle_crm_turn(task_text)
         else:
             answer = await run_worker(
                 task_text=task_text,
