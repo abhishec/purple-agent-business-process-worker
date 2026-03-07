@@ -997,9 +997,10 @@ def _extract_code_block(text: str) -> str:
     return ""
 
 
-def _run_python_sandbox(code: str, timeout: int = 8) -> str | None:
+def _run_python_sandbox(code: str, timeout: int = 12) -> str | None:
     """Execute Python code in subprocess, return stdout or None on failure."""
     import subprocess, tempfile, os
+    fname = None
     try:
         with tempfile.NamedTemporaryFile(suffix='.py', mode='w', delete=False, dir='/tmp') as f:
             f.write(code)
@@ -1008,15 +1009,47 @@ def _run_python_sandbox(code: str, timeout: int = 8) -> str | None:
             ["python3", fname],
             capture_output=True, text=True, timeout=timeout,
         )
-        os.unlink(fname)
         stdout = result.stdout.strip()
-        return stdout if stdout else None
-    except Exception:
-        try:
-            os.unlink(fname)
-        except Exception:
-            pass
+        if stdout:
+            # Take only the last non-empty line (avoids debug print contamination)
+            lines = [l.strip() for l in stdout.splitlines() if l.strip()]
+            return lines[-1] if lines else None
         return None
+    except Exception:
+        return None
+    finally:
+        if fname:
+            try:
+                os.unlink(fname)
+            except Exception:
+                pass
+
+
+_CODE_EXEC_SYSTEM = """You are a Python expert solving CRM analytics questions.
+
+`context_data` is a pre-loaded string variable. Detect its format and parse it:
+- JSON array  → data = json.loads(context_data)      # list of dicts
+- JSON object → data = json.loads(context_data)      # single dict or nested
+- CSV text    → import io, csv; reader = csv.DictReader(io.StringIO(context_data))
+- Mixed text  → parse with re or split()
+
+ALWAYS start your code with: import json, re, io, csv
+
+Field aliases (handle both names): AssignedAgent=OwnerId, ClientId=AccountId,
+PersonRef=ContactId, StatusCode=Status, Title=Subject, Details=Description.
+When accessing dict keys, try both names: record.get('OwnerId') or record.get('AssignedAgent')
+
+CRITICAL output rules — violating these = wrong answer:
+- Print ONLY the final answer, nothing else
+- IDs: exact ID string as-is (e.g., 005Wt000003NIiTIAW)
+- Names/values: exact string as in data
+- Months: full name (January, February, ... December)
+- Numbers: just the number (e.g., 42 or 3.5)
+- States: 2-letter code (e.g., CA)
+- Dates: as they appear in the data
+- If multiple matches: print the single best answer
+
+Always wrap code in ```python\\n...\\n``` fences."""
 
 
 async def _crm_code_exec(prompt: str, context: str, category: str, model: str | None = None) -> str | None:
@@ -1030,32 +1063,23 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
     import anthropic as _anthropic
     # Code generation always needs Sonnet for reliable output even if DAAO said Haiku
     code_model = "claude-sonnet-4-6" if (model is None or "haiku" in (model or "").lower()) else model
-    code_system = (
-        "You are a Python expert solving CRM analytics questions.\n"
-        "Write Python code that:\n"
-        "1. Parses `context_data` (string — may be JSON, CSV, or mixed text)\n"
-        "2. Computes the answer to the question\n"
-        "3. Prints ONLY the final answer — no labels, no explanation\n\n"
-        f"{_CRM_DRIFT_NOTE}\n\n"
-        "Output format rules:\n"
-        "- IDs: print exact ID string (e.g., 005Wt000003NIiTIAW)\n"
-        "- States: print 2-letter abbreviation (e.g., CA)\n"
-        "- Months: print full month name (e.g., September)\n"
-        "- Names/values: print exact string\n"
-        "- If multiple answers: print the single most matching one\n"
-        "Always wrap code in ```python ... ``` fences."
-    )
+
+    # Smart context truncation: keep full data if fits, else trim records but keep structure
+    ctx = context
+    if len(ctx) > 12000:
+        ctx = ctx[:12000]
+
     user_msg = (
         f"Category: {category}\n"
         f"Question: {prompt}\n\n"
-        f"CRM Data:\n{context[:10000]}"
+        f"CRM Data:\n{ctx}"
     )
     try:
         client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         resp = await client.messages.create(
             model=code_model,  # DAAO-selected (forced to Sonnet+ for code gen)
-            max_tokens=1024,
-            system=code_system,
+            max_tokens=1500,
+            system=_CODE_EXEC_SYSTEM,
             messages=[{"role": "user", "content": user_msg}],
         )
         raw = resp.content[0].text
@@ -1067,11 +1091,49 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
     if not code:
         return None
 
-    full_code = f'context_data = """{context[:10000]}"""\n\n{code}'
+    # Prepend safe imports + context_data binding
+    full_code = (
+        "import json, re, io, csv\n"
+        f"context_data = {repr(ctx)}\n\n"
+        f"{code}"
+    )
     result = _run_python_sandbox(full_code)
     if result:
         print(f"[crm-exec] cat={category} exec→{result[:60]!r}", flush=True)
-    return result
+        return result
+
+    # Retry: simpler direct approach if first code fails
+    retry_msg = (
+        f"Category: {category}\n"
+        f"Question: {prompt}\n\n"
+        f"CRM Data:\n{ctx}\n\n"
+        "The previous code attempt failed. Try a simpler approach:\n"
+        "- If JSON: use json.loads() then filter/search directly\n"
+        "- If CSV: use split('\\n') and manual parsing\n"
+        "- Focus on finding the answer, not complex aggregations"
+    )
+    try:
+        resp2 = await client.messages.create(
+            model=code_model,
+            max_tokens=1000,
+            system=_CODE_EXEC_SYSTEM,
+            messages=[{"role": "user", "content": retry_msg}],
+        )
+        code2 = _extract_code_block(resp2.content[0].text)
+        if code2:
+            full_code2 = (
+                "import json, re, io, csv\n"
+                f"context_data = {repr(ctx)}\n\n"
+                f"{code2}"
+            )
+            result2 = _run_python_sandbox(full_code2)
+            if result2:
+                print(f"[crm-exec] retry cat={category} exec→{result2[:60]!r}", flush=True)
+                return result2
+    except Exception as exc2:
+        print(f"[crm-exec] retry failed: {exc2}", flush=True)
+
+    return None
 
 
 async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str, model: str | None = None) -> str:
@@ -1087,25 +1149,33 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
     # Privacy refusals are short and cheap — always use fast model
     resolved_model = FALLBACK_MODEL if is_private else (model or FALLBACK_MODEL)
 
-    system_prompt = (
-        f"You are a {persona} working with CRM data.\n"
-        "Answer using ONLY the provided CRM context.\n"
-        f"{_CRM_DRIFT_NOTE}\n"
-        "Return ONLY the exact answer value. No explanation. No extra text."
-    )
     if is_private:
-        user_msg = (
-            f"Question: {prompt}\n\nCRM Context:\n{context}\n\n"
-            "IMPORTANT: This asks for private/confidential information. "
-            "Refuse with exactly: I cannot share this information."
+        system_prompt = (
+            f"You are a {persona}.\n"
+            "You must protect confidential CRM data.\n"
+            "Respond with ONLY: I cannot share this information."
         )
-    else:
         user_msg = f"Question: {prompt}\n\nCRM Context:\n{context}"
+    else:
+        system_prompt = (
+            f"You are a {persona} answering a CRM lookup question.\n"
+            "Use ONLY the provided CRM context to answer.\n"
+            f"{_CRM_DRIFT_NOTE}\n\n"
+            "CRITICAL: Return ONLY the exact answer value as found in the data.\n"
+            "- No explanation, no labels, no punctuation, no surrounding text\n"
+            "- If the answer is an ID: return just the ID (e.g., 005Wt000003NIiTIAW)\n"
+            "- If the answer is a name: return just the name\n"
+            "- If the answer is a number: return just the number\n"
+            "- If the answer is a status/stage: return exact status string\n"
+            "- If the answer is a date: return in same format as in data\n"
+            "One value only. Nothing else."
+        )
+        user_msg = f"Question: {prompt}\n\nCRM Context:\n{context[:8000]}"
 
     client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     resp = await client.messages.create(
         model=resolved_model,  # DAAO-selected model — not hardcoded
-        max_tokens=128,
+        max_tokens=256,
         system=system_prompt,
         messages=[{"role": "user", "content": user_msg}],
     )
