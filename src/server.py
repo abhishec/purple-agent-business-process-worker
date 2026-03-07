@@ -1342,8 +1342,9 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
 
     # ── Early None return: no real data → expected answer is "None" ──────────
     # 27% of tasks have empty/policy-only context with expected_answer='None'.
-    # Returning "None" directly is faster and scores correctly for these tasks.
-    if (strategy == "code_exec"
+    # Applies to ALL analytical categories regardless of strategy (router might
+    # select llm_direct for categories like internal_operation_data).
+    if (category in _CRM_ANALYTICAL_CATEGORIES
             and not _context_has_real_data(context)):
         print(f"[crm] no-data task cat={category} → None", flush=True)
         return "None"
