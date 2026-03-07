@@ -1535,14 +1535,20 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
     # Only for analytical categories where answer should be a short exact value.
     if answer and answer != "None" and category in _CRM_ANALYTICAL_CATEGORIES:
         import re as _re_pp
-        # Strip leading prefixes
+        # Strip leading prefixes — all phrases the LLM commonly uses before the value
         stripped = _re_pp.sub(
-            r'^(?:the answer is|answer is|answer:|result:|the result is|the value is)\s*',
+            r'^(?:the answer is|answer is|answer:|result:|the result is|the value is'
+            r'|the total is|total:|the count is|count:|the number is'
+            r'|based on (?:the )?(?:data|context|crm data)[,:]?\s*(?:the answer is\s*|it is\s*)?'
+            r'|looking at (?:the )?(?:data|context)[,:]?\s*'
+            r'|from (?:the )?(?:data|context)[,:]?\s*'
+            r'|according to (?:the )?(?:data|context)[,:]?\s*'
+            r')\s*',
             '',            # replacement: empty string
             answer.strip(),  # string to operate on
             flags=_re_pp.IGNORECASE,
         )
-        # Strip trailing period if it looks like an added punctuation (not part of ID)
+        # Strip trailing period if it looks like added punctuation (not part of ID)
         stripped = stripped.rstrip('.')
         if stripped and stripped != answer:
             print(f"[crm] strip-prefix cat={category} {answer[:40]!r}→{stripped!r}", flush=True)
