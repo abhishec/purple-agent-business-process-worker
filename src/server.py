@@ -1008,26 +1008,39 @@ def _context_has_real_data(context: str) -> bool:
 
     Helps distinguish 'no-data' tasks (expected answer = None) from tasks with
     real CRM records where we should actually compute an answer.
+
+    NOTE: we prefer false-positives over false-negatives here. A false-positive
+    (we think there's data when there isn't) just means we try code_exec and fail,
+    then fall back to llm_direct, then map refusal→None. The task still passes.
+    A false-negative (we think there's no data when there is) means we return
+    "None" for a task that expected a real answer — that's a wrong answer.
     """
-    if not context or len(context.strip()) < 200:
+    if not context or len(context.strip()) < 100:
         return False
     ctx = context.strip()
     # JSON array or object → likely real data
     if ctx.startswith('[') or ctx.startswith('{'):
         return True
-    # CSV-like: multiple lines with commas and a header
-    lines = [l for l in ctx.split('\n') if l.strip()]
-    if len(lines) > 4 and sum(1 for l in lines if ',' in l) > 3:
+    # Check left-stripped in case of leading whitespace/newline
+    lctx = ctx.lstrip()
+    if lctx.startswith('[') or lctx.startswith('{'):
         return True
-    # CRM record markers
+    # CSV-like: multiple lines with commas
+    lines = [l for l in ctx.split('\n') if l.strip()]
+    if len(lines) > 3 and sum(1 for l in lines if ',' in l) > 2:
+        return True
+    # CRM record markers — a single marker is enough to try computing
     data_markers = [
         '"Id":', '"OwnerId":', '"AccountId":', '"ContactId":', '"Status":',
-        '"CreatedDate":', '"CloseDate":', 'Id:', 'OwnerId:', 'AccountId:',
-        'CaseNumber', 'LeadSource', 'StageName', 'Amount', 'TransferCount',
+        '"CreatedDate":', '"CloseDate":', '"Amount":', '"TransferCount":',
+        'Id:', 'OwnerId:', 'AccountId:', 'ContactId:',
+        'CaseNumber', 'LeadSource', 'StageName', 'Amount',
         'OpportunityId', 'CaseId', 'LeadId', 'QuoteId',
+        'TransferCount', 'HandleTime', 'conversion_rate',
+        # Tab-separated / structured text markers
+        '\t', '|',
     ]
-    marker_count = sum(1 for m in data_markers if m in ctx)
-    return marker_count >= 2
+    return any(m in ctx for m in data_markers)
 
 
 def _is_refusal_response(answer: str) -> bool:
