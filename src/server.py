@@ -1291,6 +1291,21 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
             "No explanation, no prefix, no punctuation at the end. Just the answer."
         )
         user_msg = f"Question: {prompt}\n\nContext:\n{context[:16000]}"
+    elif category in _CRM_ANALYTICAL_CATEGORIES:
+        # Analytical fallback: code_exec failed, ask Sonnet to reason directly
+        system_prompt = (
+            f"You are a {persona} — a CRM data analyst.\n"
+            "Carefully scan ALL provided CRM data records and compute the answer.\n"
+            f"{_CRM_DRIFT_NOTE}\n\n"
+            "CRITICAL: Return ONLY the exact answer value — no explanation:\n"
+            "- Counts/aggregations: just the number (e.g., 42)\n"
+            "- Best month: full month name (e.g., September)\n"
+            "- Best region/state: 2-letter state code or region name as in data\n"
+            "- Best entity (agent, company, lead): exact name/ID from data\n"
+            "- If no relevant records: respond with exactly: None\n"
+            "One value only. No prefix. No punctuation at end."
+        )
+        user_msg = f"Question: {prompt}\n\nCRM Data:\n{context[:20000]}"
     else:
         system_prompt = (
             f"You are a {persona} answering a CRM lookup question.\n"
@@ -1305,9 +1320,7 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
             "- If the answer is a date: return in same format as in data\n"
             "One value only. Nothing else."
         )
-        # Analytical fallback needs more context — code_exec already failed so give Sonnet more
-        ctx_limit = 20000 if category in _CRM_ANALYTICAL_CATEGORIES else 8000
-        user_msg = f"Question: {prompt}\n\nCRM Context:\n{context[:ctx_limit]}"
+        user_msg = f"Question: {prompt}\n\nCRM Context:\n{context[:8000]}"
 
     is_analytical = category in _CRM_ANALYTICAL_CATEGORIES
     # text_qa needs longer answers (knowledge articles, policy reasoning)
