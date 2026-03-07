@@ -1191,16 +1191,18 @@ Use _safe_date(d) for robust date parsing (handles ISO8601, timezones, YYYY-MM-D
 Robustness rules:
 - Parse data in this order (try each until one works):
   1. JSON (double-quotes): try: data = json.loads(context_data)
-  2. Regex-stripped JSON: m=re.search(r'[\[{]',context_data); data=json.loads(context_data[m.start():]) if m else None
+  2. JSON with leading text: find first [ or { with regex, use raw_decode to allow trailing text
   3. Python literal (single-quotes): import ast; data=ast.literal_eval(context_data)
   4. CSV: reader=csv.DictReader(io.StringIO(context_data)); data=list(reader)
   5. Fallback: data=[]
-  Full robust parse:
+  Full robust parse (COPY THIS EXACTLY):
     import ast as _ast
     try: data = json.loads(context_data)
     except:
         try:
-            m=re.search(r'[\[{]',context_data); data=json.loads(context_data[m.start():]) if m else (_ for _ in ()).throw(ValueError())
+            _m=re.search(r'[\[{]',context_data)
+            if _m: data,_=json.JSONDecoder().raw_decode(context_data,_m.start())
+            else: raise ValueError()
         except:
             try: data=_ast.literal_eval(context_data)
             except:
