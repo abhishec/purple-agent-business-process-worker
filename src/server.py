@@ -1140,6 +1140,14 @@ Field aliases (handle both names): AssignedAgent=OwnerId, ClientId=AccountId,
 PersonRef=ContactId, StatusCode=Status, Title=Subject, Details=Description.
 When accessing dict keys, try both names: record.get('OwnerId') or record.get('AssignedAgent')
 
+Date handling:
+- "Today's date: YYYY-MM-DD" may appear in context — parse it to compute relative ranges
+- "last N months": from (today - N months) to today
+- "last N quarters": a quarter = 3 months, so last N quarters = last (N*3) months
+- "past N weeks": last N*7 days
+- Use datetime.strptime() for ISO dates, dateutil.parser for other formats
+- If dateutil not available: use manual parsing with datetime.strptime('%Y-%m-%d', ...)
+
 CRITICAL output rules — violating these = wrong answer:
 - Print ONLY the final answer, nothing else
 - IDs: exact ID string as-is (e.g., 005Wt000003NIiTIAW)
