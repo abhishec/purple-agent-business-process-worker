@@ -5,8 +5,8 @@ RUN useradd -m -u 1000 agentbeats
 
 WORKDIR /app
 
-# Install system utilities (curl needed for AgentBeats health check)
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
+# Install system utilities (curl for health check, git for pip git+https deps)
+RUN apt-get update && apt-get install -y --no-install-recommends curl git \
     && rm -rf /var/lib/apt/lists/*
 
 # Fix: ensure /app is owned by agentbeats so RL/knowledge files can be written
