@@ -1063,8 +1063,11 @@ def _is_refusal_response(answer: str) -> bool:
     return any(p in a_lower for p in refusal_patterns)
 
 
-def _run_python_sandbox(code: str, timeout: int = 12) -> str | None:
-    """Execute Python code in subprocess, return stdout or None on failure."""
+def _run_python_sandbox(code: str, timeout: int = 12) -> tuple[str | None, str | None]:
+    """Execute Python code in subprocess, return (stdout_last_line, stderr) or (None, error).
+
+    Returns (result, None) on success, (None, error_msg) on failure.
+    """
     import subprocess, tempfile, os
     fname = None
     try:
@@ -1076,13 +1079,17 @@ def _run_python_sandbox(code: str, timeout: int = 12) -> str | None:
             capture_output=True, text=True, timeout=timeout,
         )
         stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
         if stdout:
             # Take only the last non-empty line (avoids debug print contamination)
             lines = [l.strip() for l in stdout.splitlines() if l.strip()]
-            return lines[-1] if lines else None
-        return None
-    except Exception:
-        return None
+            return lines[-1] if lines else None, None
+        # Return stderr for retry hints
+        return None, (stderr[:500] if stderr else "no output produced")
+    except subprocess.TimeoutExpired:
+        return None, "code execution timed out"
+    except Exception as e:
+        return None, str(e)[:200]
     finally:
         if fname:
             try:
@@ -1131,9 +1138,10 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
     code_model = model or FALLBACK_MODEL
 
     # Smart context truncation: keep full data if fits, else trim records but keep structure
+    # Sonnet has 200k token window — allow up to 30k chars of context
     ctx = context
-    if len(ctx) > 12000:
-        ctx = ctx[:12000]
+    if len(ctx) > 30000:
+        ctx = ctx[:30000]
 
     user_msg = (
         f"Category: {category}\n"
@@ -1163,25 +1171,28 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         f"context_data = {repr(ctx)}\n\n"
         f"{code}"
     )
-    result = _run_python_sandbox(full_code)
+    result, exec_error = _run_python_sandbox(full_code)
     if result:
         print(f"[crm-exec] cat={category} exec→{result[:60]!r}", flush=True)
         return result
 
-    # Retry: simpler direct approach if first code fails
+    # Retry: provide the actual error to help the model fix the code
+    error_hint = f"Error from previous attempt: {exec_error}" if exec_error else "Previous code produced no output"
     retry_msg = (
         f"Category: {category}\n"
         f"Question: {prompt}\n\n"
         f"CRM Data:\n{ctx}\n\n"
-        "The previous code attempt failed. Try a simpler approach:\n"
-        "- If JSON: use json.loads() then filter/search directly\n"
-        "- If CSV: use split('\\n') and manual parsing\n"
-        "- Focus on finding the answer, not complex aggregations"
+        f"{error_hint}\n\n"
+        "Fix the code to produce the correct answer:\n"
+        "- Check data structure first: print(type(data), str(data)[:200])\n"
+        "- Try both JSON parse and string search methods\n"
+        "- Handle missing/null values gracefully\n"
+        "- If no matching data found, print exactly: None"
     )
     try:
         resp2 = await client.messages.create(
             model=code_model,
-            max_tokens=1000,
+            max_tokens=1200,
             system=_CODE_EXEC_SYSTEM,
             messages=[{"role": "user", "content": retry_msg}],
         )
@@ -1192,7 +1203,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
                 f"context_data = {repr(ctx)}\n\n"
                 f"{code2}"
             )
-            result2 = _run_python_sandbox(full_code2)
+            result2, _ = _run_python_sandbox(full_code2)
             if result2:
                 print(f"[crm-exec] retry cat={category} exec→{result2[:60]!r}", flush=True)
                 return result2
