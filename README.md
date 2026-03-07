@@ -216,8 +216,12 @@ docker run -e ANTHROPIC_API_KEY=sk-ant-... \
 - **LLM:** claude-haiku-4-5-20251001 (classification, synthesis, audit) · claude-sonnet-4-6 (COMPUTE, MUTATE)
 - **FSM:** Custom 8-state engine · dynamic synthesis for novel process types
 - **Strategy:** UCB1 bandit over fsm / five_phase / moa (+ CRM Router via Brain)
-- **Core library:** [brainos-core-light](https://github.com/abhishec/brainoscorelight) — 5-layer Brain, zero-LLM Router, UCB1 strategy selection, RL primitives
-- **Brain layers:** WorkingMemory · EpisodicMemory · SemanticMemory (EMA) · StrategicMemory (UCB1) · MetaMemory
+- **Core library:** [brainos-core-light](https://github.com/abhishec/brainoscorelight) v0.3.0
+  - `Brain` + `Router` — UCB1 strategy bandit + 5-layer memory (WorkingMemory · EpisodicMemory · SemanticMemory · StrategicMemory · MetaMemory)
+  - `DAAO` — zero-LLM model routing (Haiku classification, Sonnet reasoning)
+  - `MutationContract` — verify write tools called when task requires mutation
+  - `CodeExecutor` — LLM → Python → subprocess sandbox (CRM analytical categories)
+  - `PrivacyGuard` — PII detection before any API call
 - **Numerics:** `decimal.Decimal` in sandboxed tool execution
 - **RL:** UCB1 + case log + quality scoring + knowledge extraction + sequence graph (EMA)
 - **Protocol:** A2A JSON-RPC 2.0
