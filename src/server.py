@@ -1514,7 +1514,13 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
     # ── Post-process: normalize None variants → "None" ───────────────────────
     # LLMs may return "none", "null", "n/a" when they mean no-data. Normalize
     # to exact "None" which is what the benchmark expects for missing-data tasks.
-    if answer and answer.strip().lower() in {"none", "null", "n/a", "na", "undefined"}:
+    if answer and answer.strip().lower() in {"none", "null", "n/a", "na", "undefined", "none."}:
+        answer = "None"
+    # Catch short phrases containing "none" (e.g. "None found", "None available")
+    # Only for very short strings to avoid false positives
+    if (answer and category in _CRM_ANALYTICAL_CATEGORIES
+            and len(answer.strip()) < 20
+            and answer.strip().lower().startswith("none")):
         answer = "None"
 
     # ── Post-process: strip common LLM prefix noise from short answers ────────
