@@ -1302,7 +1302,11 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
         )
         user_msg = f"Question: {prompt}\n\nCRM Context:\n{context[:8000]}"
 
-    max_tok = 512 if is_text_qa else 256
+    is_analytical = category in _CRM_ANALYTICAL_CATEGORIES
+    # text_qa needs longer answers (knowledge articles, policy reasoning)
+    # analytical is a short exact value (id, name, number, month) — save tokens
+    # lookup / privacy are also short
+    max_tok = 512 if is_text_qa else (64 if is_analytical else 128)
     client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     resp = await client.messages.create(
         model=resolved_model,  # Sonnet for all non-privacy tasks
