@@ -1061,14 +1061,13 @@ Always wrap code in ```python\\n...\\n``` fences."""
 async def _crm_code_exec(prompt: str, context: str, category: str, model: str | None = None) -> str | None:
     """Two-stage: generate Python code via DAAO-selected model, execute, return answer.
 
-    Args:
-        model: DAAO-selected model. Code generation always uses at least Sonnet
-               (analytical tasks need reliable code — override to sonnet if fast model given).
+    Uses DAAO model selection directly: Haiku for simple lookups (fast, cheap),
+    Sonnet for complex aggregations (higher accuracy). Falls back to FALLBACK_MODEL.
     Returns None if code generation or execution fails so caller can fallback.
     """
     import anthropic as _anthropic
-    # Code generation always needs Sonnet for reliable output even if DAAO said Haiku
-    code_model = "claude-sonnet-4-6" if (model is None or "haiku" in (model or "").lower()) else model
+    # Trust DAAO routing: Haiku for simple lookups, Sonnet for complex analytics
+    code_model = model or FALLBACK_MODEL
 
     # Smart context truncation: keep full data if fits, else trim records but keep structure
     ctx = context
@@ -1083,7 +1082,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
     try:
         client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         resp = await client.messages.create(
-            model=code_model,  # DAAO-selected (forced to Sonnet+ for code gen)
+            model=code_model,  # DAAO-selected (Haiku for simple, Sonnet for complex)
             max_tokens=1500,
             system=_CODE_EXEC_SYSTEM,
             messages=[{"role": "user", "content": user_msg}],
