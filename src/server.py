@@ -1256,13 +1256,14 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         print(f"[crm-exec] cat={category} exec→{result[:60]!r}", flush=True)
         return result
 
-    # Retry: provide the actual error to help the model fix the code
+    # Retry: provide the actual error AND previous code to help the model fix specifically
     error_hint = f"Error from previous attempt: {exec_error}" if exec_error else "Previous code produced no output"
     retry_msg = (
         f"Category: {category}\n"
         f"Question: {prompt}\n\n"
         f"CRM Data:\n{ctx}\n\n"
         f"{error_hint}\n\n"
+        f"Previous code that failed:\n```python\n{code}\n```\n\n"
         "Fix the code to produce the correct answer:\n"
         "- Inspect data format: try JSON parse first, then CSV, then string search\n"
         "- Handle missing/null field values gracefully (skip None records)\n"
@@ -1371,16 +1372,23 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
     client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     # 25s timeout: allows for slow Sonnet responses while staying within 60s task limit
     # For code_exec fallback: 20s(gen)+8s(exec)+25s(llm_direct) = 53s < 60s
-    resp = await asyncio.wait_for(
-        client.messages.create(
-            model=resolved_model,
-            max_tokens=max_tok,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_msg}],
-        ),
-        timeout=25.0,
-    )
-    return resp.content[0].text.strip()
+    try:
+        resp = await asyncio.wait_for(
+            client.messages.create(
+                model=resolved_model,
+                max_tokens=max_tok,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_msg}],
+            ),
+            timeout=25.0,
+        )
+        return resp.content[0].text.strip()
+    except asyncio.TimeoutError:
+        print(f"[crm-llm] timeout cat={category}", flush=True)
+        return "None"
+    except Exception as exc:
+        print(f"[crm-llm] error cat={category}: {exc}", flush=True)
+        return "None"
 
 
 async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
@@ -1390,6 +1398,7 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
     Hard fallback to category-based if/elif if brainos_core not installed.
     """
     import json as _json
+    _task_start = time.monotonic()  # track elapsed for 60s deadline
 
     try:
         task = _json.loads(task_text)
@@ -1464,10 +1473,16 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
                     answer = "None"
                 else:
                     # Has data but code failed — try llm_direct with Sonnet
-                    print(f"[crm] exec fallback for cat={category}", flush=True)
-                    # Use Sonnet (not DAAO model) for analytics fallback too
-                    answer = await _crm_llm_direct(prompt, context, persona, category, model=FALLBACK_MODEL)
-                    strategy = "llm_direct"  # update strategy for reward signal
+                    # Only if we have enough time left (need at least 12s for LLM call)
+                    _elapsed = time.monotonic() - _task_start
+                    if _elapsed < 45.0:
+                        print(f"[crm] exec fallback for cat={category} (elapsed={_elapsed:.1f}s)", flush=True)
+                        # Use Sonnet (not DAAO model) for analytics fallback too
+                        answer = await _crm_llm_direct(prompt, context, persona, category, model=FALLBACK_MODEL)
+                        strategy = "llm_direct"  # update strategy for reward signal
+                    else:
+                        print(f"[crm] skip fallback (too slow {_elapsed:.1f}s) cat={category} → None", flush=True)
+                        answer = "None"
         else:
             answer = await _crm_llm_direct(prompt, context, persona, category, model=model)
     except Exception as exc:
