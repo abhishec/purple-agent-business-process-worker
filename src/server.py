@@ -1384,6 +1384,8 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
     # analytical is a short exact value (id, name, number, month) — save tokens
     # lookup / privacy are also short
     max_tok = 512 if is_text_qa else (64 if is_analytical else 128)
+    # Low temperature for precise value extraction; slightly higher for text reasoning
+    temperature = 0.3 if is_text_qa else 0.1
     client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     # 25s timeout: allows for slow Sonnet responses while staying within 60s task limit
     # For code_exec fallback: 20s(gen)+8s(exec)+25s(llm_direct) = 53s < 60s
@@ -1392,6 +1394,7 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
             client.messages.create(
                 model=resolved_model,
                 max_tokens=max_tok,
+                temperature=temperature,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_msg}],
             ),
