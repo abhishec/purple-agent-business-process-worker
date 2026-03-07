@@ -1341,10 +1341,10 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
     code_model = FALLBACK_MODEL
 
     # Smart context truncation: keep full data if fits, else trim records but keep structure
-    # Sonnet has 200k token window — allow up to 30k chars of context
+    # Sonnet has 200k token window — allow up to 40k chars of context (~10k tokens, safe within 60s)
     ctx = context
-    if len(ctx) > 30000:
-        ctx = ctx[:30000]
+    if len(ctx) > 40000:
+        ctx = ctx[:40000]
 
     # Add category-specific hint to guide computation approach
     _cat_hint = _CRM_CATEGORY_HINTS.get(category, "")
@@ -1524,7 +1524,7 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
             "If the context does not contain the answer, respond with exactly: None\n"
             "No explanation, no prefix, no punctuation at the end. Just the answer."
         )
-        user_msg = f"Question: {prompt}\n\nContext:\n{context[:32000]}"
+        user_msg = f"Question: {prompt}\n\nContext:\n{context[:50000]}"
     elif category in _CRM_ANALYTICAL_CATEGORIES:
         # Analytical fallback: code_exec failed, ask Sonnet to reason directly
         system_prompt = (
@@ -1541,7 +1541,7 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
             "- If no relevant records AND question is not a count: respond with exactly: None\n"
             "One value only. No prefix. No punctuation at end."
         )
-        user_msg = f"Category: {category}\nQuestion: {prompt}\n\nCRM Data:\n{context[:20000]}"
+        user_msg = f"Category: {category}\nQuestion: {prompt}\n\nCRM Data:\n{context[:30000]}"
     else:
         system_prompt = (
             f"You are a {persona} answering a CRM lookup question.\n"
@@ -1556,7 +1556,7 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
             "- If the answer is a date: return in same format as in data\n"
             "One value only. Nothing else."
         )
-        user_msg = f"Category: {category}\nQuestion: {prompt}\n\nCRM Context:\n{context[:16000]}"
+        user_msg = f"Category: {category}\nQuestion: {prompt}\n\nCRM Context:\n{context[:25000]}"
 
     is_analytical = category in _CRM_ANALYTICAL_CATEGORIES
     # text_qa needs longer answers (knowledge articles, policy reasoning)
