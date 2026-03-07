@@ -1183,10 +1183,12 @@ _CODE_EXEC_SYSTEM = """You are a Python expert solving CRM analytics questions.
 - CSV text    → use csv.DictReader(io.StringIO(context_data)); collect rows with list(reader)
 - Mixed text  → parse with re or split()
 
-These are pre-imported for you: json, re, io, csv, datetime, math, statistics, itertools, Counter, defaultdict, itemgetter, dt (datetime.datetime alias), timedelta
+These are pre-imported for you: json, re, io, csv, ast, datetime, math, statistics, itertools, Counter, defaultdict, itemgetter, dt (datetime.datetime alias), timedelta
 Use Counter for counting/frequency, defaultdict for groupby, itemgetter for sorting.
 Use statistics.mean() for averages, statistics.median() for medians.
 Use _safe_date(d) for robust date parsing (handles ISO8601, timezones, YYYY-MM-DD, MM/DD/YYYY).
+CRITICAL: Do NOT import pandas, numpy, scipy, or any third-party library — they are NOT installed.
+CRITICAL: Do NOT use import requests, urllib, or any network library.
 
 Robustness rules:
 - Parse data in this order (try each until one works):
