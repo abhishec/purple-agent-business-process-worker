@@ -1353,7 +1353,7 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
             "- If the answer is a date: return in same format as in data\n"
             "One value only. Nothing else."
         )
-        user_msg = f"Question: {prompt}\n\nCRM Context:\n{context[:8000]}"
+        user_msg = f"Category: {category}\nQuestion: {prompt}\n\nCRM Context:\n{context[:16000]}"
 
     is_analytical = category in _CRM_ANALYTICAL_CATEGORIES
     # text_qa needs longer answers (knowledge articles, policy reasoning)
