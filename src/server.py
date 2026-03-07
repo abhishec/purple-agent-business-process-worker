@@ -1131,7 +1131,13 @@ async def _run_python_sandbox(code: str, timeout: int = 8) -> tuple[str | None, 
         if stdout and exit_ok:
             # Take only the last non-empty line (avoids debug print contamination)
             lines = [l.strip() for l in stdout.splitlines() if l.strip()]
-            return lines[-1] if lines else None, None
+            result = lines[-1] if lines else None
+            if result:
+                # Normalize "3.0" → "3": CRM answers are counts/totals, never need ".0"
+                import re as _re_sandbox
+                if _re_sandbox.match(r'^-?\d+\.0$', result):
+                    result = result[:-2]
+            return result, None
         if stderr:
             # Non-zero exit or error: pass stderr to retry as an error hint
             return None, stderr[:500]
@@ -1162,9 +1168,12 @@ Use Counter for counting/frequency, defaultdict for groupby, itemgetter for sort
 
 Robustness rules:
 - Wrap JSON parse in try/except — fall back to CSV or string search if JSON fails
+- If context_data has a header (e.g. "Today's date: ...") before JSON, find the JSON start:
+  start = context_data.find('[') if '[' in context_data else context_data.find('{'); data = json.loads(context_data[start:]) if start >= 0 else []
+- If data is a dict (not list), check if records are under a key: records = data.get('records') or data.get('data') or data.get('results') or [data]
 - Inspect first record's keys to find actual field names: keys = list(data[0].keys()) if data else []
 - When accessing dict keys, try aliases: record.get('OwnerId') or record.get('AssignedAgent')
-- Check for None/null values before arithmetic: skip records where field is None
+- Check for None/null values before arithmetic: skip records where field is None or field == ''
 - For CSV: first check if context_data.strip().startswith('[') before trying CSV
 - Integer output: if result is a whole number, use int(result) to avoid '3.0' instead of '3'
 
@@ -1225,6 +1234,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
             client.messages.create(
                 model=code_model,
                 max_tokens=1500,
+                temperature=0.2,   # low temp = deterministic, fewer hallucinated field names
                 system=_CODE_EXEC_SYSTEM,
                 messages=[{"role": "user", "content": user_msg}],
             ),
@@ -1275,6 +1285,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
             client.messages.create(
                 model=code_model,
                 max_tokens=1200,
+                temperature=0.1,   # even lower on retry — target the specific error precisely
                 system=_CODE_EXEC_SYSTEM,
                 messages=[{"role": "user", "content": retry_msg}],
             ),
