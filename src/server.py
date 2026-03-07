@@ -1023,10 +1023,10 @@ def _context_has_real_data(context: str) -> bool:
     A false-negative (we think there's no data when there is) means we return
     "None" for a task that expected a real answer — that's a wrong answer.
     """
-    if not context or len(context.strip()) < 100:
+    if not context or len(context.strip()) < 5:
         return False
     ctx = context.strip()
-    # JSON array or object → likely real data
+    # JSON array or object → likely real data (even short JSON is real data)
     if ctx.startswith('[') or ctx.startswith('{'):
         return True
     # Check left-stripped in case of leading whitespace/newline
