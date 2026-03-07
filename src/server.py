@@ -1681,7 +1681,18 @@ async def _handle_crm_turn(task_text: str, session_id: str = "") -> str:
         )
         # Strip trailing period if it looks like added punctuation (not part of ID)
         stripped = stripped.rstrip('.')
-        if stripped and stripped != answer:
+        # Strip trailing noise noun after a number: "42 records" → "42", "0 cases" → "0"
+        # Protects against LLM saying "42 leads" when we expect just "42"
+        if stripped and _re_pp.match(r'^\d', stripped):
+            stripped = _re_pp.sub(
+                r'\s+(?:records?|cases?|leads?|items?|results?|entries|entry|rows?'
+                r'|agents?|users?|accounts?|contacts?|opportunities?|deals?|quotes?'
+                r'|tickets?|events?|tasks?|activities?|meetings?)$',
+                '',
+                stripped,
+                flags=_re_pp.IGNORECASE,
+            )
+        if stripped and stripped != answer.strip():
             print(f"[crm] strip-prefix cat={category} {answer[:40]!r}→{stripped!r}", flush=True)
             answer = stripped
 
