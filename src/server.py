@@ -1226,10 +1226,10 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         f"CRM Data:\n{ctx}\n\n"
         f"{error_hint}\n\n"
         "Fix the code to produce the correct answer:\n"
-        "- Check data structure first: print(type(data), str(data)[:200])\n"
-        "- Try both JSON parse and string search methods\n"
-        "- Handle missing/null values gracefully\n"
-        "- If no matching data found, print exactly: None"
+        "- Inspect data format: try JSON parse first, then CSV, then string search\n"
+        "- Handle missing/null field values gracefully (skip None records)\n"
+        "- CRITICAL: The LAST print() call must be ONLY the answer (no debug prints after answer)\n"
+        "- If no matching data found, last print must be exactly: None"
     )
     try:
         resp2 = await client.messages.create(
