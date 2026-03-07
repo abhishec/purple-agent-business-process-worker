@@ -13,7 +13,7 @@ from src.dynamic_fsm import get_synthesis_stats
 from src.dynamic_tools import seed_amortization_tool, get_tool_registry_stats
 from src.strategy_bandit import get_stats as get_bandit_stats, ensure_warmed as bandit_warm
 from src.report_analyzer import analyze_and_save, load_intelligence
-from src.config import ANTHROPIC_API_KEY, FALLBACK_MODEL
+from src.config import ANTHROPIC_API_KEY, FALLBACK_MODEL, FAST_MODEL
 
 # ── Tau2-bench multi-turn session state ───────────────────────────────────────
 # The tau2 evaluator does NOT use MCP. Instead it embeds tool schemas as JSON
@@ -939,8 +939,8 @@ try:
     _crm_brain = Brain()
     _crm_router = Router(_crm_brain)
     _crm_daao = DAAO(
-        fast_model=FALLBACK_MODEL,
-        main_model="claude-sonnet-4-6",
+        fast_model=FAST_MODEL,        # Haiku — simple lookups, privacy refusals
+        main_model=FALLBACK_MODEL,    # Sonnet — analysis, synthesis, complex tasks
     )
     # Seed field aliases into semantic memory so brain context includes them
     _crm_brain.semantic.set_field_aliases({
@@ -1146,8 +1146,8 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
     import anthropic as _anthropic
 
     is_private = category in _CRM_PRIVATE_CATEGORIES
-    # Privacy refusals are short and cheap — always use fast model
-    resolved_model = FALLBACK_MODEL if is_private else (model or FALLBACK_MODEL)
+    # Privacy refusals are short and cheap — always use Haiku; lookups use DAAO-selected model
+    resolved_model = FAST_MODEL if is_private else (model or FALLBACK_MODEL)
 
     if is_private:
         system_prompt = (
