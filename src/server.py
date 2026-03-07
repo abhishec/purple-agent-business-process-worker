@@ -1368,11 +1368,16 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
     # lookup / privacy are also short
     max_tok = 512 if is_text_qa else (64 if is_analytical else 128)
     client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-    resp = await client.messages.create(
-        model=resolved_model,  # Sonnet for all non-privacy tasks
-        max_tokens=max_tok,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_msg}],
+    # 25s timeout: allows for slow Sonnet responses while staying within 60s task limit
+    # For code_exec fallback: 20s(gen)+8s(exec)+25s(llm_direct) = 53s < 60s
+    resp = await asyncio.wait_for(
+        client.messages.create(
+            model=resolved_model,
+            max_tokens=max_tok,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_msg}],
+        ),
+        timeout=25.0,
     )
     return resp.content[0].text.strip()
 
