@@ -1514,40 +1514,54 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
     # code_exec always uses Sonnet — analytics are never simple enough for Haiku
     code_model = FALLBACK_MODEL
 
-    # Smart context truncation: keep full data if fits, else trim records but keep structure
-    # Sonnet has 200k token window — allow up to 40k chars of context (~10k tokens, safe within 60s)
-    ctx = context
-    if len(ctx) > 40000:
-        ctx = ctx[:40000]
+    # Two-level context handling:
+    # - ctx_sandbox: FULL context for sandbox code execution (no truncation)
+    # - ctx_for_llm: schema sample for Sonnet code generation (3 records + field names)
+    #   → Sonnet only needs the schema to write correct code, not all 500 records
+    #   → This avoids LLM prompt being 100K chars for large datasets
+    import json as _j_fh, re as _re_fh2
+    ctx_sandbox = context  # full data for sandbox — no truncation
 
-    # Add category-specific hint to guide computation approach
     _cat_hint = _CRM_CATEGORY_HINTS.get(category, "")
-
-    # Pre-extract field names from first record so Sonnet knows actual fields upfront
-    # (avoids hallucinating field names on first attempt — same info as retry's _field_hint)
     _upfront_field_hint = ""
+    _ctx_for_llm = context  # default: show full context to Sonnet
+    _total_records = 0
+
     try:
-        import json as _j_fh, ast as _ast_fh, re as _re_fh2
-        _ctx_preview = None
+        _ctx_parsed = None
         try:
-            _ctx_preview = _j_fh.loads(ctx)
+            _ctx_parsed = _j_fh.loads(context)
         except Exception:
-            for _m2 in _re_fh2.finditer(r'[\[{]', ctx):
+            for _m2 in _re_fh2.finditer(r'[\[{]', context):
                 try:
-                    _p2, _ = _j_fh.JSONDecoder().raw_decode(ctx, _m2.start())
+                    _p2, _ = _j_fh.JSONDecoder().raw_decode(context, _m2.start())
                     if isinstance(_p2, (list, dict)) and _p2:
-                        _ctx_preview = _p2; break
+                        _ctx_parsed = _p2; break
                 except Exception:
                     continue
-        if isinstance(_ctx_preview, list) and _ctx_preview and isinstance(_ctx_preview[0], dict):
-            _upfront_field_hint = f"\nActual fields available: {list(_ctx_preview[0].keys())}"
-        elif isinstance(_ctx_preview, dict):
-            for _v2 in _ctx_preview.values():
+
+        if isinstance(_ctx_parsed, list) and _ctx_parsed:
+            _total_records = len(_ctx_parsed)
+            if isinstance(_ctx_parsed[0], dict):
+                _upfront_field_hint = f"\nActual fields available: {list(_ctx_parsed[0].keys())}"
+            # For large datasets: show sample to LLM (full data stays in sandbox)
+            if _total_records > 10 and len(context) > 8000:
+                _sample = _ctx_parsed[:5]  # 5 records for schema
+                _ctx_for_llm = (
+                    _j_fh.dumps(_sample)
+                    + f"\n... ({_total_records} total records, same schema. Full data in sandbox.)"
+                )
+                print(f"[crm-exec] large context cat={category} records={_total_records} llm_sample=5", flush=True)
+        elif isinstance(_ctx_parsed, dict):
+            for _v2 in _ctx_parsed.values():
                 if isinstance(_v2, list) and _v2 and isinstance(_v2[0], dict):
                     _upfront_field_hint = f"\nActual fields available: {list(_v2[0].keys())}"
                     break
     except Exception:
-        pass
+        _ctx_for_llm = context[:40000]  # fallback: simple truncation
+
+    # ctx used in LLM prompt (sample) — sandbox always gets full data via ctx_sandbox
+    ctx = _ctx_for_llm
 
     user_msg = (
         f"Category: {category}" + (f" — Hint: {_cat_hint}" if _cat_hint else "") + _upfront_field_hint + "\n"
@@ -1627,7 +1641,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
     )
     full_code = (
         _SANDBOX_HEADER
-        + f"context_data = {repr(ctx)}\n"
+        + f"context_data = {repr(ctx_sandbox)}\n"  # FULL data for sandbox — not sample
         + "data = _normalize_context(context_data)  # pre-parsed records list\n\n"
         + code
     )
@@ -1695,7 +1709,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
     retry_msg = (
         f"Category: {category}\n"
         f"Question: {prompt}\n\n"
-        f"CRM Data:\n{ctx}\n\n"
+        f"CRM Data (sample schema):\n{ctx}\n\n"  # ctx = sample (for LLM prompt brevity)
         f"{error_hint}{_field_hint}\n\n"
         f"Previous code that failed:\n```python\n{code}\n```\n\n"
         "Fix the code:\n"
@@ -1716,7 +1730,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         if code2:
             full_code2 = (
                 _SANDBOX_HEADER
-                + f"context_data = {repr(ctx)}\n"
+                + f"context_data = {repr(ctx_sandbox)}\n"  # FULL data for retry sandbox
                 + "data = _normalize_context(context_data)  # pre-parsed records list\n\n"
                 + code2
             )
