@@ -41,8 +41,18 @@ def validate_tool_call(
     return True, ""
 
 
-def _is_empty_result(result: dict) -> bool:
-    """Return True when the tool result carries no useful data."""
+def _is_empty_result(result) -> bool:
+    """Return True when the tool result carries no useful data.
+
+    Bug 116: result can be a list (JSON array from tools that return records directly).
+    Handle lists first: a non-empty list always has data; empty list = no data.
+    """
+    # Bug 116: JSON-RPC tools may return parsed JSON arrays (lists) directly.
+    # result.get() on a list raises AttributeError, silently discarding valid data.
+    if isinstance(result, list):
+        return len(result) == 0  # non-empty list = has data; empty list = no data
+    if not isinstance(result, dict):
+        return False  # unknown type — assume not empty (prefer false positive)
     if "error" in result:
         return False  # errors are meaningful — not "empty"
     for key in ("data", "result", "items", "records", "rows"):

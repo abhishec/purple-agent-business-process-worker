@@ -1691,7 +1691,8 @@ async def _crm_fetch_context_via_tools(
                 timeout=10.0,
             )
             # Reject error responses (validation failures, tool errors) — they are not CRM data
-            if isinstance(result, dict) and "error" in result:
+            # Bug 115: check error value is truthy — {"records": [...], "error": null} is valid
+            if isinstance(result, dict) and result.get("error"):
                 _err = result["error"]
                 print(f"[crm-tools] tool={tool_name} error={str(_err)[:60]}", flush=True)
                 return ""
