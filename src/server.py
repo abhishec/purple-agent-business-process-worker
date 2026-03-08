@@ -1768,7 +1768,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
             _fix_hints.insert(1, "- If result is 0 (zero count): print(0) — zero is a valid answer")
 
     retry_msg = (
-        f"Category: {category}\n"
+        f"Category: {category}" + (f" — Hint: {_cat_hint}" if _cat_hint else "") + "\n"
         f"Question: {prompt}\n\n"
         f"CRM Data (sample schema):\n{ctx}\n\n"  # ctx = sample (for LLM prompt brevity)
         f"{error_hint}{_field_hint}\n\n"
