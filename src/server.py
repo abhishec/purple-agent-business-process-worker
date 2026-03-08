@@ -2076,8 +2076,9 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
                         timeout=min(_tool_budget - 2.0, 25.0),
                     )
                     if fetched and len(fetched.strip()) >= 30:
-                        # For knowledge_qa with a long original KB article, prefer original over CRM records
-                        if category == "knowledge_qa" and _text_original_ctx and len(_text_original_ctx.strip()) > 200:
+                        # For knowledge_qa: ANY non-trivial original context is a KB article.
+                        # Prefer it over fetched CRM records (CRM records are not KB articles).
+                        if category == "knowledge_qa" and _text_original_ctx and len(_text_original_ctx.strip()) >= 20:
                             context = _text_original_ctx
                             print(f"[crm] knowledge_qa: keeping original KB text (len={len(_text_original_ctx)}) over fetched", flush=True)
                         else:
@@ -2280,6 +2281,15 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
         _month_name = _cal.month_name[int(answer.strip())]
         print(f"[crm] month-num→name cat={category} {answer!r}→{_month_name!r}", flush=True)
         answer = _month_name
+
+    # ── Post-process: normalize Yes/No capitalization ─────────────────────────
+    # LLMs may return "yes", "YES", "no", "NO" — benchmark likely expects "Yes"/"No".
+    # Safe normalization: only when answer is exactly the word (no prefix/suffix).
+    if answer and answer.strip().lower() in {"yes", "no"}:
+        _normalized_yn = answer.strip().capitalize()
+        if _normalized_yn != answer.strip():
+            print(f"[crm] yes/no normalize cat={category} {answer!r}→{_normalized_yn!r}", flush=True)
+        answer = _normalized_yn
 
     # ── Record outcome to Brain (all 5 layers, zero LLM cost) ─────────────────
     if _crm_router is not None:
