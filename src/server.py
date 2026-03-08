@@ -1379,8 +1379,10 @@ _CRM_CATEGORY_HINTS = {
     "conversion_rate_comprehension": (
         "Calculate conversion rate or converted count. "
         "def is_true(v): return v in (True,'true','True','Yes','yes','1',1). "
+        "_q = prompt_text.lower(). "
+        "_is_count_q = 'how many' in _q or 'count' in _q.  # True when asking for a count not a rate "
         "_rf = next((f for f in ['ConversionRate','conversion_rate','Rate','ConvertedRate'] if data and data[0].get(f) is not None), None). "
-        "if _rf:  # pre-computed field: HIGHEST PRIORITY "
+        "if _rf and not _is_count_q:  # pre-computed rate field — skip when count is needed "
         "    _rv = [float(r.get(_rf)) for r in data if r.get(_rf) is not None]. "
         "    v = statistics.mean(_rv) if _rv else None. "
         "    if v is not None: print(round(v*100,2) if v < 1.0 else round(v,2)) "
@@ -1390,8 +1392,7 @@ _CRM_CATEGORY_HINTS = {
         "    if not converted: converted = [r for r in data if r.get('ConvertedDate')]. "
         "    if not converted: converted = [r for r in data if r.get('Status','') in ('Closed Won','Converted','Won','Qualified')]. "
         "    # Apply date/owner filters from question if any. "
-        "    _q = prompt_text.lower(). "
-        "    if 'how many' in _q or 'count' in _q: print(len(converted)). "
+        "    if _is_count_q: print(len(converted)). "
         "    else: rate = len(converted)/len(data)*100 if data else 0; print(round(rate, 2))."
     ),
     "best_region_identification": (
@@ -1454,11 +1455,15 @@ _CRM_CATEGORY_HINTS = {
     "sales_cycle_understanding": (
         "Analyze sales cycle duration from CreatedDate to close date. "
         "Close date fields: CloseDate, CompletedDate, SolvedDate, ResolutionDate, WonDate. "
+        "_q = prompt_text.lower(). "
+        "Pre-filter by stage if question specifies (e.g. Closed Won): "
+        "  _smap={'closed won':'Closed Won','won':'Closed Won','closed lost':'Closed Lost'}. "
+        "  _sc_stage=next((v for k,v in _smap.items() if k in _q), None). "
+        "  rows=[r for r in data if r.get('StageName','').lower()==_sc_stage.lower()] if _sc_stage else list(data). "
         "durations = []; "
-        "for r in data: s=_safe_date(r.get('CreatedDate')); e=_safe_date(r.get('CloseDate') or r.get('CompletedDate') or r.get('SolvedDate') or r.get('WonDate')); "
+        "for r in rows: s=_safe_date(r.get('CreatedDate')); e=_safe_date(r.get('CloseDate') or r.get('CompletedDate') or r.get('SolvedDate') or r.get('WonDate')); "
         "if s and e: durations.append((e-s).total_seconds()/86400).  # raw days (float) "
         "avg_days = statistics.mean(durations) if durations else None. "
-        "_q = prompt_text.lower(). "
         "final = (avg_days*24 if avg_days is not None else None) if 'hour' in _q else ((avg_days/7 if avg_days is not None else None) if 'week' in _q else avg_days). "
         "print(int(final) if final is not None and final % 1 == 0 else round(final, 2) if final is not None else None)."
     ),
@@ -1482,8 +1487,12 @@ _CRM_CATEGORY_HINTS = {
         "    groups=defaultdict(float). "
         "    for r in rows: k=r.get(_gf); v=r.get(_af); "
         "    if k: groups[k]+=float(v) if v is not None else 0. "
-        "    print(min(groups,key=groups.get) if groups else None) if any(w in _q for w in ['lowest','least','worst','min']) else print(max(groups,key=groups.get) if groups else None). "
-        "  else: c=Counter(r.get(_gf) for r in rows if r.get(_gf)); print(c.most_common(1)[0][0] if c else None). "
+        "    _is_min_si = any(w in _q for w in ['lowest','least','worst','minimum','fewest']). "
+        "    print(min(groups,key=groups.get) if groups else None) if _is_min_si else print(max(groups,key=groups.get) if groups else None). "
+        "  else: "
+        "    _is_min_si = any(w in _q for w in ['lowest','least','worst','minimum','fewest']). "
+        "    c=Counter(r.get(_gf) for r in rows if r.get(_gf)). "
+        "    print(c.most_common()[-1][0] if c else None) if _is_min_si else print(c.most_common(1)[0][0] if c else None). "
         "Return EXACT entity name as in data."
     ),
     "top_issue_identification": (
