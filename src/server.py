@@ -1050,6 +1050,9 @@ def _context_has_real_data(context: str) -> bool:
     if not context or len(context.strip()) < 5:
         return False
     ctx = context.strip()
+    # Reject empty JSON structures — no real CRM data
+    if ctx in ('{}', '[]', '{""}', "{''}"):
+        return False
     # JSON array or object → likely real data (even short JSON is real data)
     if ctx.startswith('[') or ctx.startswith('{'):
         return True
