@@ -1374,8 +1374,8 @@ _CRM_CATEGORY_HINTS = {
         "grouped = defaultdict(float); "
         "for r in data: k=r.get(_rf); v=r.get(_af); "
         "if k: grouped[k] += float(v) if v is not None else 0. "
-        "Count-based: Counter(r.get(_rf) for r in data if r.get(_rf)).most_common(1)[0][0]. "
-        "print(max(grouped, key=grouped.get) if grouped else None) or min() per the question. "
+        "Count-based: c=Counter(r.get(_rf) for r in data if r.get(_rf)); print(c.most_common(1)[0][0] if c else None). "
+        "Amount-based: print(max(grouped, key=grouped.get) if grouped else None) — or min() per the question. "
         "Output: exact region string as it appears in data."
     ),
     "lead_qualification": (
@@ -1397,10 +1397,12 @@ _CRM_CATEGORY_HINTS = {
     ),
     "wrong_stage_rectification": (
         "This is ONE specific opportunity record. "
-        "Apply the stage-correctness rules from the question to the opportunity's fields (Amount, CloseDate, etc.). "
-        "If the current stage is wrong, return the CORRECT stage name. "
-        "If the stage is already correct, return the current stage or 'Correct'. "
-        "Return the exact stage name as it appears in standard Salesforce stages. "
+        "Apply the stage-correctness rules from the question to the opportunity's fields (Amount, CloseDate, StageName, etc.). "
+        "If the current stage is wrong, return the CORRECT stage name (e.g., 'Negotiation/Review', 'Closed Won'). "
+        "If the stage is already correct, return the CURRENT StageName value exactly as stored in the record. "
+        "NEVER return 'Correct' — always return the actual stage name string. "
+        "Standard Salesforce stages: Prospecting, Qualification, Needs Analysis, Value Proposition, "
+        "Id. Decision Makers, Perception Analysis, Proposal/Price Quote, Negotiation/Review, Closed Won, Closed Lost. "
         "If cannot determine: return None."
     ),
     "sales_cycle_understanding": (
