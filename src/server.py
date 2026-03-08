@@ -1372,15 +1372,19 @@ _CRM_CATEGORY_HINTS = {
     ),
     "top_issue_identification": (
         "Find the most frequent issue category/type across all cases. "
-        "Try fields in order: Type, Category, CaseType, IssueType, Subject, Priority, Reason. "
-        "Use Counter: c = Counter(r.get('Type') for r in data if r.get('Type')). "
+        "Try fields in order: Type, Category, CaseType, IssueType, Subject, Reason, Priority. "
+        "Pick whichever field has the most non-None values: "
+        "_f = max(['Type','Category','CaseType','IssueType','Reason'], key=lambda f: sum(1 for r in data if r.get(f))). "
+        "c = Counter(r.get(_f) for r in data if r.get(_f)). "
         "result = c.most_common(1); print(result[0][0] if result else None) — just the string, not the count."
     ),
     "named_entity_disambiguation": (
         "The data has records for a specific contact/account/lead. "
-        "Match the entity the question refers to using: ID, name, date, phone, email, or related object. "
-        "Return the exact ID or Name field value that uniquely matches the criteria. "
-        "If no record matches: return None."
+        "The question provides criteria to identify the correct one (e.g., company name, date, phone, email, location, related ID). "
+        "Find the record where ALL criteria match. "
+        "Return: the exact Id if asked for ID; exact Name/FullName if asked for name; "
+        "or the exact requested field value from the matching record. "
+        "If no single record matches, or data is empty: print(None)."
     ),
     "invalid_config": (
         "This is ONE specific quote/record. "
