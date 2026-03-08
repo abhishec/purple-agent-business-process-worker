@@ -1812,22 +1812,39 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
             )
             user_msg = f"Question: {prompt}"
     elif category in _CRM_ANALYTICAL_CATEGORIES:
-        # Analytical fallback: code_exec failed, ask Sonnet to reason directly
-        system_prompt = (
-            f"You are a {persona} — a CRM data analyst.\n"
-            "Carefully scan ALL provided CRM data records and compute the answer.\n"
-            f"{_CRM_DRIFT_NOTE}\n\n"
-            "CRITICAL: Return ONLY the exact answer value — no explanation:\n"
-            "- Counts/aggregations: just the number (e.g., 42; use 0 if count is zero)\n"
-            "- Best month: full month name (e.g., September)\n"
-            "- Best region/state: 2-letter state code or region name as in data\n"
-            "- Best entity (agent, company, lead): exact name/ID from data\n"
-            "- Rates/percentages: just the number (e.g., 25.5 or 0.25 as in data)\n"
-            "- If question asks 'how many' or 'count' and answer is 0: respond with 0\n"
-            "- If no relevant records AND question is not a count: respond with exactly: None\n"
-            "One value only. No prefix. No punctuation at end."
-        )
         _entity_hint = _CRM_CATEGORY_HINTS.get(category, "")
+        _is_entity_specific = category in _CRM_ENTITY_SPECIFIC_CATEGORIES
+        if _is_entity_specific:
+            # Entity-specific: single record lookup (lead, opp, quote, etc.) — NOT aggregation
+            system_prompt = (
+                f"You are a {persona} — a CRM expert.\n"
+                "The CRM data contains ONE specific record. Answer the question by reading the "
+                "relevant field(s) from that record.\n"
+                f"{_CRM_DRIFT_NOTE}\n\n"
+                "CRITICAL: Return ONLY the exact answer value — no explanation:\n"
+                "- Field values: return the exact string as in the record (e.g., 'Prospecting', 'Web')\n"
+                "- IDs: return the exact ID string (e.g., 005Wt000003NIiTIAW)\n"
+                "- Yes/No questions: return Yes or No\n"
+                "- Stage/status names: exact string from data\n"
+                "- If the field is missing or answer cannot be determined: respond with exactly: None\n"
+                "One value only. No prefix. No punctuation at end."
+            )
+        else:
+            # Aggregate analytical fallback: code_exec failed, ask Sonnet to reason directly
+            system_prompt = (
+                f"You are a {persona} — a CRM data analyst.\n"
+                "Carefully scan ALL provided CRM data records and compute the answer.\n"
+                f"{_CRM_DRIFT_NOTE}\n\n"
+                "CRITICAL: Return ONLY the exact answer value — no explanation:\n"
+                "- Counts/aggregations: just the number (e.g., 42; use 0 if count is zero)\n"
+                "- Best month: full month name (e.g., September)\n"
+                "- Best region/state: 2-letter state code or region name as in data\n"
+                "- Best entity (agent, company, lead): exact name/ID from data\n"
+                "- Rates/percentages: just the number (e.g., 25.5 or 0.25 as in data)\n"
+                "- If question asks 'how many' or 'count' and answer is 0: respond with 0\n"
+                "- If no relevant records AND question is not a count: respond with exactly: None\n"
+                "One value only. No prefix. No punctuation at end."
+            )
         user_msg = (
             f"Category: {category}"
             + (f" — {_entity_hint}" if _entity_hint else "") + "\n"
