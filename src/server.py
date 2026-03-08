@@ -1483,8 +1483,35 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
 
     # Add category-specific hint to guide computation approach
     _cat_hint = _CRM_CATEGORY_HINTS.get(category, "")
+
+    # Pre-extract field names from first record so Sonnet knows actual fields upfront
+    # (avoids hallucinating field names on first attempt — same info as retry's _field_hint)
+    _upfront_field_hint = ""
+    try:
+        import json as _j_fh, ast as _ast_fh, re as _re_fh2
+        _ctx_preview = None
+        try:
+            _ctx_preview = _j_fh.loads(ctx)
+        except Exception:
+            for _m2 in _re_fh2.finditer(r'[\[{]', ctx):
+                try:
+                    _p2, _ = _j_fh.JSONDecoder().raw_decode(ctx, _m2.start())
+                    if isinstance(_p2, (list, dict)) and _p2:
+                        _ctx_preview = _p2; break
+                except Exception:
+                    continue
+        if isinstance(_ctx_preview, list) and _ctx_preview and isinstance(_ctx_preview[0], dict):
+            _upfront_field_hint = f"\nActual fields available: {list(_ctx_preview[0].keys())}"
+        elif isinstance(_ctx_preview, dict):
+            for _v2 in _ctx_preview.values():
+                if isinstance(_v2, list) and _v2 and isinstance(_v2[0], dict):
+                    _upfront_field_hint = f"\nActual fields available: {list(_v2[0].keys())}"
+                    break
+    except Exception:
+        pass
+
     user_msg = (
-        f"Category: {category}" + (f" — Hint: {_cat_hint}" if _cat_hint else "") + "\n"
+        f"Category: {category}" + (f" — Hint: {_cat_hint}" if _cat_hint else "") + _upfront_field_hint + "\n"
         f"Question: {prompt}\n\n"
         f"CRM Data:\n{ctx}"
     )
