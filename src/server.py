@@ -1404,12 +1404,17 @@ async def _crm_fetch_context_via_tools(
         return ""
 
     async def _try_tool(tool_name: str, params: dict) -> str:
-        """Call tool and return JSON string, or "" if empty/error."""
+        """Call tool and return JSON string, or "" if empty/error/validation-failed."""
         try:
             result = await asyncio.wait_for(
                 call_tool(tools_endpoint, tool_name, params, session_id, tools),
                 timeout=10.0,
             )
+            # Reject error responses (validation failures, tool errors) — they are not CRM data
+            if isinstance(result, dict) and "error" in result:
+                _err = result["error"]
+                print(f"[crm-tools] tool={tool_name} error={str(_err)[:60]}", flush=True)
+                return ""
             if _is_empty_result(result):
                 return ""
             ctx = _json_tools.dumps(result) if isinstance(result, (dict, list)) else str(result)
