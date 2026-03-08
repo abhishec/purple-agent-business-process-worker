@@ -1298,10 +1298,11 @@ _CRM_CATEGORY_HINTS = {
         "Output: exact region string as it appears in data."
     ),
     "lead_qualification": (
-        "Data is for ONE specific lead (entity-specific task). "
-        "Read the relevant field directly from data[0]. No filtering needed. "
-        "Example: print(data[0].get('LeadSource') or data[0].get('Rating') or data[0].get('Status')). "
-        "Return the exact field value. If genuinely not found: print(None)."
+        "This is ONE specific lead record. "
+        "Read the field(s) the question asks about (e.g., LeadSource, Rating, Status, ConvertedDate). "
+        "Return the exact field value as stored. "
+        "If the question asks about qualification status: return 'Qualified' or 'Not Qualified' based on the data. "
+        "If the field is missing or answer genuinely unknown: return None."
     ),
     "activity_priority": (
         "Find tasks matching the criteria (often Status='Not Started' + some constraint). "
@@ -1309,10 +1310,12 @@ _CRM_CATEGORY_HINTS = {
         "Use record.get('Id') for each match. If none match: print(None)."
     ),
     "wrong_stage_rectification": (
-        "Data is for ONE specific opportunity (entity-specific task). "
-        "Check if the stage is correct per the rules in the question. "
-        "Read data[0] fields — no iteration needed. "
-        "Answer: the correct stage name, the current stage, or None if cannot determine."
+        "This is ONE specific opportunity record. "
+        "Apply the stage-correctness rules from the question to the opportunity's fields (Amount, CloseDate, etc.). "
+        "If the current stage is wrong, return the CORRECT stage name. "
+        "If the stage is already correct, return the current stage or 'Correct'. "
+        "Return the exact stage name as it appears in standard Salesforce stages. "
+        "If cannot determine: return None."
     ),
     "sales_cycle_understanding": (
         "Analyze sales cycle duration. "
@@ -1335,23 +1338,27 @@ _CRM_CATEGORY_HINTS = {
         "print(c.most_common(1)[0][0]) — just the string value, not the count."
     ),
     "named_entity_disambiguation": (
-        "Data has records for a specific contact/entity. "
-        "Identify the correct entity by matching ID, date, or related-object fields. "
-        "Return the exact ID or name that matches the criteria. print(None) if no match."
+        "The data has records for a specific contact/account/lead. "
+        "Match the entity the question refers to using: ID, name, date, phone, email, or related object. "
+        "Return the exact ID or Name field value that uniquely matches the criteria. "
+        "If no record matches: return None."
     ),
     "invalid_config": (
-        "Data is for ONE specific quote (entity-specific task). "
-        "Check data[0] for invalid/missing values per the question criteria. "
-        "Return the specific invalid field name, value, or None if all valid."
+        "This is ONE specific quote/record. "
+        "Check the fields the question specifies for invalid/missing values. "
+        "If a field is invalid: return the exact field NAME (e.g., 'DiscountRate') or the invalid value. "
+        "If all fields are valid per the criteria: return None."
     ),
     "internal_operation_data": (
         "Find operations matching the criteria. Print ALL matching IDs as a list, or print(None) if none match. "
         "Look for SLA violations, escalations, status mismatches."
     ),
     "quote_approval": (
-        "Data is for ONE specific quote (entity-specific task). "
-        "Check data[0] approval status, amount, or workflow stage per the question. "
-        "Return Yes/No or the relevant field value. print(None) if cannot determine."
+        "This is ONE specific quote record. "
+        "Check the approval status, amount thresholds, or workflow stage per the question rules. "
+        "For Yes/No questions (e.g., 'Should this be approved?'): return Yes or No. "
+        "For status questions: return the exact status value. "
+        "If cannot determine: return None."
     ),
 }
 
@@ -1819,14 +1826,16 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
             system_prompt = (
                 f"You are a {persona} — a CRM expert.\n"
                 "The CRM data contains ONE specific record. Answer the question by reading the "
-                "relevant field(s) from that record.\n"
+                "relevant field(s) directly from that record.\n"
                 f"{_CRM_DRIFT_NOTE}\n\n"
                 "CRITICAL: Return ONLY the exact answer value — no explanation:\n"
-                "- Field values: return the exact string as in the record (e.g., 'Prospecting', 'Web')\n"
+                "- Field values: return the exact string as stored in the record (e.g., 'Prospecting', 'Web', 'Active')\n"
+                "- Field names when asked which field is invalid: return exact field name (e.g., 'DiscountRate')\n"
                 "- IDs: return the exact ID string (e.g., 005Wt000003NIiTIAW)\n"
-                "- Yes/No questions: return Yes or No\n"
-                "- Stage/status names: exact string from data\n"
-                "- If the field is missing or answer cannot be determined: respond with exactly: None\n"
+                "- Yes/No questions (e.g., 'Is this approved?'): return Yes or No\n"
+                "- Stage/status corrections: return the correct stage string exactly as it should appear\n"
+                "- Qualification status: return the exact status value (e.g., 'Qualified', 'Not Qualified')\n"
+                "- If the answer genuinely cannot be determined from the data: respond with exactly: None\n"
                 "One value only. No prefix. No punctuation at end."
             )
         else:
