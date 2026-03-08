@@ -1347,19 +1347,18 @@ _CRM_CATEGORY_HINTS = {
         "FIRST: find pre-computed field: "
         "_ht_field = next((f for f in ['HandleTime','AverageHandleTime','AHT','AvgHandleTime','ResolutionTime','TalkTime','HoldTime'] if data and data[0].get(f) is not None), None). "
         "If _ht_field found: vals = [float(r.get(_ht_field)) for r in data if r.get(_ht_field) is not None]. "
-        "Read question for aggregation: "
         "  'total/sum' question: result = sum(vals). "
         "  'average'/'avg'/'mean' or default: result = statistics.mean(vals). "
-        "print(int(result) if vals and result == int(result) else round(result, 2)) if vals else print(None). "
+        "  print(int(result) if vals and result % 1 == 0 else round(result, 2)) if vals else print(None). STOP. "
         "ELSE compute from dates: "
-        "durations=[]; "
-        "for r in data: s=_safe_date(r.get('CreatedDate')); "
-        "e=_safe_date(r.get('ClosedDate') or r.get('ResolvedDate') or r.get('SolvedDate') or r.get('CompletedDate')); "
-        "if s and e: durations.append((e-s).total_seconds()). "
-        "result = statistics.mean(durations) if durations else None. "
-        "Output: default MINUTES (result/60); 'hours': result/3600; 'days': result/86400. "
-        "val = result/60 if durations else None. "
-        "print(int(val) if val is not None and val == int(val) else round(val, 2) if val is not None else None)."
+        "  durations=[]; "
+        "  for r in data: s=_safe_date(r.get('CreatedDate')); "
+        "  e=_safe_date(r.get('ClosedDate') or r.get('ResolvedDate') or r.get('SolvedDate') or r.get('CompletedDate')); "
+        "  if s and e: durations.append((e-s).total_seconds()). "
+        "  raw = statistics.mean(durations) if durations else None. "
+        "  Choose divisor from question: 'minute'→60, 'hour'→3600, 'day'→86400, default→60. "
+        "  val = raw / divisor if raw is not None else None. "
+        "  print(int(val) if val is not None and val % 1 == 0 else round(val, 2) if val is not None else None)."
     ),
     "conversion_rate_comprehension": (
         "Calculate conversion rate or converted count. "
@@ -1403,15 +1402,17 @@ _CRM_CATEGORY_HINTS = {
     "activity_priority": (
         "Find ALL tasks matching ALL criteria in the question. "
         "Task ID field: Id (primary), fallback to TaskId or ActivityId. "
-        "Filter conditions (combine with 'and' for all that apply): "
-        "  r.get('Status') in ('Not Started','Open')  [or per question] "
+        "Filter conditions (combine with 'and' for all that apply from the question): "
+        "  r.get('Status') in ('Not Started','Open')  [or whichever status the question specifies] "
         "  r.get('Priority') == 'High'  [or 'Normal'/'Low' per question] "
         "  _safe_date(r.get('ActivityDate') or r.get('DueDate')) <= today  [due date check] "
-        "  r.get('OwnerId') == 'some_id'  [owner check] "
-        "Example: matches = [r.get('Id') or r.get('TaskId') for r in data "
-        "    if r.get('Status') == 'Not Started' and r.get('Priority') == 'High']. "
-        "CRITICAL: if not matches: print(None). If matches: print(matches) as a Python list. "
-        "Sort by Priority ('High' first) then DueDate ascending if question asks for priority order."
+        "  r.get('OwnerId') == 'specific_id'  [owner check] "
+        "Full pattern: "
+        "  filtered = [r for r in data if <conditions from question>]. "
+        "  matches = [r.get('Id') or r.get('TaskId') or r.get('ActivityId') for r in filtered]. "
+        "  matches = [x for x in matches if x]  # remove any None values. "
+        "  print(matches) if matches else print(None). "
+        "Sort by Priority ('High' first) then DueDate ascending if question requests priority order."
     ),
     "wrong_stage_rectification": (
         "This is ONE specific opportunity record. "
@@ -1426,13 +1427,14 @@ _CRM_CATEGORY_HINTS = {
     "sales_cycle_understanding": (
         "Analyze sales cycle duration from CreatedDate to close date. "
         "Close date fields: CloseDate, CompletedDate, SolvedDate, ResolutionDate, WonDate. "
-        "Pattern: "
         "durations = []; "
         "for r in data: s=_safe_date(r.get('CreatedDate')); e=_safe_date(r.get('CloseDate') or r.get('CompletedDate') or r.get('SolvedDate') or r.get('WonDate')); "
-        "if s and e: durations.append((e-s).total_seconds()/86400). "
-        "Default unit: DAYS (total_seconds()/86400). If question says hours: use total_seconds()/3600. "
-        "avg = statistics.mean(durations) if durations else None; "
-        "print(int(avg) if avg is not None and avg == int(avg) else round(avg, 1) if avg is not None else None)."
+        "if s and e: durations.append((e-s).total_seconds()/86400).  # raw days (float) "
+        "avg = statistics.mean(durations) if durations else None. "
+        "Default output unit is DAYS (use avg as-is). "
+        "If question says 'hours': avg_hours = avg * 24; print value in hours. "
+        "If question says 'weeks': avg_weeks = avg / 7; print value in weeks. "
+        "print(int(avg) if avg is not None and avg % 1 == 0 else round(avg, 2) if avg is not None else None)."
     ),
     "sales_insight_mining": (
         "Identify (1) what to GROUP BY from the question, (2) what metric to aggregate. "
@@ -1459,12 +1461,15 @@ _CRM_CATEGORY_HINTS = {
         "result = c.most_common(1); print(result[0][0] if result else None) — just the string, not the count."
     ),
     "named_entity_disambiguation": (
-        "The data has records for a specific contact/account/lead. "
-        "The question provides criteria to identify the correct one (e.g., company name, date, phone, email, location, related ID). "
-        "Find the record where ALL criteria match. "
-        "Return: the exact Id if asked for ID; exact Name/FullName if asked for name; "
-        "or the exact requested field value from the matching record. "
-        "If no single record matches, or data is empty: return None."
+        "The data has multiple records for entities with similar names. Identify the ONE that matches ALL criteria in the question. "
+        "Common disambiguation criteria: company/account name, city, state, email, phone, job title, related record ID, date. "
+        "Pattern: "
+        "matches = [r for r in data if all criteria match]. "
+        "E.g. if question says 'from Chicago' and 'works at Acme': "
+        "  matches = [r for r in data if r.get('City')=='Chicago' and r.get('Company')=='Acme']. "
+        "If matches has exactly 1 record: return the requested field from matches[0]. "
+        "Return: Id if asked for ID; Name/FullName if asked for name; else the specific requested field. "
+        "If 0 or 2+ records match (ambiguous): return None."
     ),
     "invalid_config": (
         "This is ONE specific quote/record. "
@@ -1478,10 +1483,15 @@ _CRM_CATEGORY_HINTS = {
     # internal_operation_data: private category — always hard-refused, hint never used.
     "quote_approval": (
         "This is ONE specific quote record. "
-        "Check the approval status, amount thresholds, or workflow stage per the question rules. "
-        "For Yes/No questions (e.g., 'Should this be approved?'): return Yes or No. "
-        "For status questions: return the exact status value. "
-        "If cannot determine: return None."
+        "The question specifies approval rules (e.g., amount thresholds, discount limits, required fields, expiry). "
+        "Read the question rules carefully, then check the quote's fields against them. "
+        "Common fields: Status, ApprovalStatus, TotalPrice, DiscountRate, ExpiryDate, ApprovedBy, Quantity. "
+        "For Yes/No questions (e.g., 'Should this be approved?', 'Is approval needed?'): "
+        "  Apply the threshold/condition from the question → return Yes or No. "
+        "For status questions ('What is the approval status?'): "
+        "  Return the exact ApprovalStatus or Status field value. "
+        "For field queries ('Who approved this?'): return the exact field value. "
+        "If cannot determine from available data: return None."
     ),
 }
 
@@ -2399,6 +2409,17 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
                 if _clean_dec != _stripped_num:
                     print(f"[crm] strip-trail-zero cat={category} {_stripped_num!r}→{_clean_dec!r}", flush=True)
                     answer = _clean_dec
+
+    # ── Post-process: strip trailing % from numeric percentage answers ─────────
+    # LLMs often return "25.5%" but benchmark expects "25.5" (decimal form).
+    # Only strip if the remaining part is a valid number.
+    if (answer and answer != "None" and category in _CRM_ANALYTICAL_CATEGORIES
+            and not _is_list_answer and answer.strip().endswith('%')):
+        import re as _re_pct
+        _pct_candidate = answer.strip().rstrip('%').strip()
+        if _re_pct.match(r'^-?\d+(\.\d+)?$', _pct_candidate):
+            print(f"[crm] strip-% cat={category} {answer!r}→{_pct_candidate!r}", flush=True)
+            answer = _pct_candidate
 
     # ── Post-process: month number → full month name for monthly_trend_analysis ─
     # If code returned "3" (month number) instead of "March", convert it.
