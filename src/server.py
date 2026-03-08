@@ -1193,6 +1193,7 @@ Using `data`:
 - `data` is already a list of dicts. Use it directly: for r in data: ...
 - Inspect field names: keys = list(data[0].keys()) if data else []
 - If data seems empty, you may re-parse: data = _normalize_context(context_data)
+- IGNORE any "[System Notice: ...]" or "[Note: ...]" text at the start of context_data — it is noise, not data
 - When accessing dict keys, try aliases: record.get('OwnerId') or record.get('AssignedAgent')
 - Check for None/null values before arithmetic: skip records where field is None or field == ''
 - Integer output: if result is a whole number, use int(result) to avoid '3.0' instead of '3'
@@ -1476,10 +1477,13 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         "    parsed = None\n"
         "    try: parsed = json.loads(s)\n"
         "    except:\n"
-        "        m = re.search(r'[\\[{]', s)\n"
-        "        if m:\n"
-        "            try: parsed, _ = json.JSONDecoder().raw_decode(s, m.start())\n"
-        "            except: pass\n"
+        "        # Try each '[' or '{' position — first may be a notice/header, not JSON\n"
+        "        for m in re.finditer(r'[\\[{]', s):\n"
+        "            try:\n"
+        "                _p, _ = json.JSONDecoder().raw_decode(s, m.start())\n"
+        "                if isinstance(_p, (list, dict)) and _p:\n"
+        "                    parsed = _p; break\n"
+        "            except: continue\n"
         "    if parsed is None:\n"
         "        try: parsed = ast.literal_eval(s)\n"
         "        except: pass\n"
@@ -1576,7 +1580,8 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         if code2:
             full_code2 = (
                 _SANDBOX_HEADER
-                + f"context_data = {repr(ctx)}\n\n"
+                + f"context_data = {repr(ctx)}\n"
+                + "data = _normalize_context(context_data)  # pre-parsed records list\n\n"
                 + code2
             )
             result2, _ = await _run_python_sandbox(full_code2)
