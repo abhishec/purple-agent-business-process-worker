@@ -1666,10 +1666,15 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
                 )
                 print(f"[crm-exec] large context cat={category} records={_total_records} llm_sample=5", flush=True)
         elif isinstance(_ctx_parsed, dict):
+            _found_nested = False
             for _v2 in _ctx_parsed.values():
                 if isinstance(_v2, list) and _v2 and isinstance(_v2[0], dict):
                     _upfront_field_hint = f"\nActual fields available: {list(_v2[0].keys())}"
+                    _found_nested = True
                     break
+            if not _found_nested:
+                # Single-record dict context (entity-specific categories)
+                _upfront_field_hint = f"\nActual fields available: {list(_ctx_parsed.keys())}"
     except Exception:
         _ctx_for_llm = context[:40000]  # fallback: simple truncation
 
