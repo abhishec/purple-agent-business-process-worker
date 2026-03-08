@@ -1320,9 +1320,11 @@ _CRM_CATEGORY_HINTS = {
         "If the field is missing or answer genuinely unknown: return None."
     ),
     "activity_priority": (
-        "Find tasks matching the criteria (often Status='Not Started' + some constraint). "
-        "CRITICAL: Print ALL matching task IDs as a Python list: print([id1, id2, ...]). "
-        "Use record.get('Id') for each match. If none match: print(None)."
+        "Find tasks matching ALL criteria in the question (e.g., Status='Not Started', Priority, DueDate, Owner). "
+        "CRITICAL: Print ALL matching task IDs as a Python list: print([r.get('Id') for r in data if <conditions>]). "
+        "If the list is empty: print(None). Never print an empty list []. "
+        "For due date conditions: use _safe_date() for comparison. "
+        "Sort by priority/due date if question asks for ordered list."
     ),
     "wrong_stage_rectification": (
         "This is ONE specific opportunity record. "
