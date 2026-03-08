@@ -1301,14 +1301,16 @@ _CRM_CATEGORY_HINTS = {
     ),
     "handle_time": (
         "Calculate handle time across cases. "
-        "FIRST: check pre-computed field: AverageHandleTime, HandleTime, AHT, AvgHandleTime, ResolutionTime. "
-        "If found: vals = [float(r.get('HandleTime') or r.get('AHT') or 0) for r in data if (r.get('HandleTime') or r.get('AHT')) is not None]; "
+        "FIRST: find pre-computed field: AverageHandleTime, HandleTime, AHT, AvgHandleTime, ResolutionTime. "
+        "_ht_field = next((f for f in ['HandleTime','AverageHandleTime','AHT','AvgHandleTime','ResolutionTime'] if data and data[0].get(f) is not None), None). "
+        "If _ht_field found: vals = [float(r.get(_ht_field)) for r in data if r.get(_ht_field) is not None]; "
         "print(round(statistics.mean(vals), 2)) if vals else print(None). "
-        "ELSE compute from dates: start = _safe_date(r.get('CreatedDate')); "
-        "end = _safe_date(r.get('ClosedDate') or r.get('ResolvedDate') or r.get('SolvedDate') or r.get('CompletedDate')). "
-        "duration_s = (end - start).total_seconds() if start and end else None. "
-        "Output: default = MINUTES (divide by 60); if 'hours': divide by 3600; if 'days': divide by 86400. "
-        "int() for whole-number results, round(x, 2) for decimals."
+        "ELSE compute from dates: "
+        "durations=[]; "
+        "for r in data: s=_safe_date(r.get('CreatedDate')); e=_safe_date(r.get('ClosedDate') or r.get('ResolvedDate') or r.get('SolvedDate') or r.get('CompletedDate')); "
+        "(durations.append((e-s).total_seconds()) if s and e else None). "
+        "Output: default MINUTES (divide by 60); 'hours': /3600; 'days': /86400. "
+        "int() if whole number, round(x, 2) for decimals."
     ),
     "conversion_rate_comprehension": (
         "If question asks for rate/percentage: rate = converted_count / total * 100, round to 2 decimal places. "
@@ -1348,12 +1350,13 @@ _CRM_CATEGORY_HINTS = {
     ),
     "sales_cycle_understanding": (
         "Analyze sales cycle duration from CreatedDate to close date. "
-        "Close date field alternatives: CloseDate, CompletedDate, SolvedDate, ResolutionDate, WonDate. "
-        "Use .get(): start = _safe_date(r.get('CreatedDate')); end = _safe_date(r.get('CloseDate') or r.get('CompletedDate') or r.get('SolvedDate')). "
-        "Skip records where start or end is None. "
-        "durations = [(end - start).days for r in data for start,end in [(_safe_date(r.get('CreatedDate')), _safe_date(r.get('CloseDate') or r.get('CompletedDate')))] if start and end]. "
-        "Default output unit: days. If question says hours: use total_seconds()/3600. "
-        "Average: round(statistics.mean(durations), 1) if durations else print(None). int() if whole number."
+        "Close date fields: CloseDate, CompletedDate, SolvedDate, ResolutionDate, WonDate. "
+        "Pattern: "
+        "durations = []; "
+        "for r in data: s=_safe_date(r.get('CreatedDate')); e=_safe_date(r.get('CloseDate') or r.get('CompletedDate') or r.get('SolvedDate') or r.get('WonDate')); "
+        "(durations.append((e-s).days) if s and e else None). "
+        "Default unit: days. If question says hours: use total_seconds()/3600 instead of .days. "
+        "Result: round(statistics.mean(durations), 1) if durations else print(None). int() if whole number."
     ),
     "sales_insight_mining": (
         "Identify (1) what to GROUP BY from the question, (2) what metric to aggregate. "
