@@ -1185,28 +1185,40 @@ async def _run_python_sandbox(code: str, timeout: int = 8) -> tuple[str | None, 
         stdout = stdout_b.decode("utf-8", errors="replace").strip()
         stderr = stderr_b.decode("utf-8", errors="replace").strip()
         exit_ok = proc.returncode == 0
+        import re as _re_sandbox
+
+        def _normalize_result(r: str) -> str:
+            """Normalize numeric trailing zeros: '3.0'→'3', '25.50'→'25.5'."""
+            if _re_sandbox.match(r'^-?\d+\.\d*$', r):
+                try:
+                    fval = float(r)
+                    return str(int(fval)) if fval == int(fval) else str(fval)
+                except (ValueError, OverflowError):
+                    pass
+            return r
+
+        def _extract_last_line(out: str) -> str | None:
+            lines = [l.strip() for l in out.splitlines() if l.strip()]
+            return lines[-1] if lines else None
+
         if stdout and exit_ok:
-            # Take only the last non-empty line (avoids debug print contamination)
-            lines = [l.strip() for l in stdout.splitlines() if l.strip()]
-            result = lines[-1] if lines else None
+            result = _extract_last_line(stdout)
             if result:
-                # Normalize numeric trailing zeros: "3.0"→"3", "25.50"→"25.5"
-                import re as _re_sandbox
-                if _re_sandbox.match(r'^-?\d+\.\d*$', result):
-                    try:
-                        fval = float(result)
-                        if fval == int(fval):
-                            result = str(int(fval))   # "3.0"/"3.00" → "3"
-                        else:
-                            result = str(fval)         # "25.50" → "25.5"
-                    except (ValueError, OverflowError):
-                        pass  # leave result unchanged if conversion fails
+                result = _normalize_result(result)
             return result, None
+
+        # Bug 107: code may print a valid answer then crash (exception in later code).
+        # If stdout has content + last line looks like a valid short answer → salvage it.
+        if stdout and not exit_ok:
+            _candidate = _extract_last_line(stdout)
+            if _candidate and len(_candidate) <= 200:
+                _bad_kw = ('Traceback', 'Error:', '  File "', 'Exception:', 'SyntaxError')
+                if not any(kw in _candidate for kw in _bad_kw):
+                    return _normalize_result(_candidate), None  # salvaged answer
+
         if stderr:
-            # Non-zero exit or error: pass stderr to retry as an error hint
             return None, stderr[:500]
         if stdout and not exit_ok:
-            # Had partial output but crashed — last line might be garbage, use stderr
             return None, f"Script exited with code {proc.returncode} after printing: {stdout[-100:]}"
         return None, "no output produced"
     except Exception as e:
@@ -2058,8 +2070,13 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
 
     is_private = category in _CRM_PRIVATE_CATEGORIES
     is_text_qa = category in _CRM_TEXT_CATEGORIES
-    # Privacy refusals → Haiku (fast, cheap). Text QA & lookups → Sonnet (reasoning needed).
-    resolved_model = FAST_MODEL if is_private else FALLBACK_MODEL
+    is_entity_specific = category in _CRM_ENTITY_SPECIFIC_CATEGORIES
+    # Model selection:
+    # - Private refusals → Haiku (fast, cheap; hard-refusal bypasses this anyway)
+    # - Entity-specific lookups → Haiku (single-record field reads, hints explicit)  Bug 099
+    # - Text QA (knowledge_qa, policy) → Sonnet (needs reasoning over KB articles)
+    # - Analytical fallback → Sonnet (needs accuracy for aggregation)
+    resolved_model = FAST_MODEL if (is_private or is_entity_specific) else FALLBACK_MODEL
 
     if is_private:
         system_prompt = (
