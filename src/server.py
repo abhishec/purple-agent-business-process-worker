@@ -2286,8 +2286,19 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
             return "None"
     if category in _CRM_TEXT_CATEGORIES and not _context_has_real_data(context):
         _text_original_ctx = context  # preserve: might be knowledge base text, not just entity IDs
+        # Bug 074: knowledge_qa with plain-text KB article → skip fetch (KB text IS the context).
+        # _context_has_real_data returns False for plain text (no JSON), triggering unnecessary
+        # ~10s tool fetch that wastes task budget. Use boolean flag to skip fetch path.
+        _kb_skip_fetch = (
+            category == "knowledge_qa"
+            and _text_original_ctx
+            and len(_text_original_ctx.strip()) >= 20
+        )
+        if _kb_skip_fetch:
+            print(f"[crm] knowledge_qa: plain-text KB context (len={len(_text_original_ctx)}), skip fetch", flush=True)
+            context = _text_original_ctx
         _fetch_ep_text = tools_endpoint or GREEN_AGENT_MCP_URL
-        if _fetch_ep_text:
+        if _fetch_ep_text and not _kb_skip_fetch:
             _elapsed_pre = time.monotonic() - _task_start
             _tool_budget = max(55.0 - _elapsed_pre, 5.0)
             if _tool_budget > 5.0:
