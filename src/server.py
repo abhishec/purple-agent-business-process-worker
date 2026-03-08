@@ -1807,7 +1807,11 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
                     "If the context does not contain the answer, respond with exactly: None\n"
                     "No explanation, no prefix, no punctuation at the end. Just the answer."
                 )
-            user_msg = f"Question: {prompt}\n\nContext:\n{context[:50000]}"
+            if _is_policy:
+                # Make Rules vs Data separation explicit for policy compliance checking
+                user_msg = f"Policy Rules (from question):\n{prompt}\n\nCase Data (to check against rules):\n{context[:50000]}"
+            else:
+                user_msg = f"Question: {prompt}\n\nContext:\n{context[:50000]}"
         else:
             # No context provided — use LLM's built-in CRM and Salesforce knowledge
             system_prompt = (
