@@ -1880,7 +1880,7 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
         else:
             print(f"[crm] no-data task cat={category} → None", flush=True)
             return "None"
-    if category in _CRM_TEXT_CATEGORIES and (not context or len(context.strip()) < 30):
+    if category in _CRM_TEXT_CATEGORIES and not _context_has_real_data(context):
         _fetch_ep_text = tools_endpoint or GREEN_AGENT_MCP_URL
         if _fetch_ep_text:
             _elapsed_pre = time.monotonic() - _task_start
