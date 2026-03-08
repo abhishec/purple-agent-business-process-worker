@@ -1398,9 +1398,13 @@ async def _crm_fetch_context_via_tools(
     # ── Strategy 0: Extract Salesforce entity IDs programmatically ─────────────
     # Salesforce IDs are 15 or 18 alphanumeric chars starting with a 3-char prefix.
     # Examples: 00QWs00000GLFE9MAP (lead), 500Ws00000Mj2iZIAR (case), 006Ws00000ALnXMIA1 (opp)
-    _entity_ids = _re_id.findall(r'\b[0-9A-Za-z]{15,18}\b', required_context)
+    # Search both required_context AND prompt (entity IDs may appear in either)
+    _id_search_text = f"{required_context} {prompt}"
+    _entity_ids = _re_id.findall(r'\b[0-9A-Za-z]{15,18}\b', _id_search_text)
     # Filter: Salesforce IDs start with digits/uppercase and are 15 or 18 chars
     _sf_ids = [i for i in _entity_ids if len(i) in (15, 18) and _re_id.match(r'^[0-9][0-9A-Za-z]{14,17}$', i)]
+    # Deduplicate while preserving order
+    _sf_ids = list(dict.fromkeys(_sf_ids))
 
     try:
         tools = await asyncio.wait_for(
