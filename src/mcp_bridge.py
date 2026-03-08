@@ -117,6 +117,90 @@ async def discover_tools(tools_endpoint: str, session_id: str = "") -> list[dict
     return []
 
 
+async def fetch_via_a2a(endpoint: str, prompt: str, session_id: str = "") -> str:
+    """Send a task to an A2A agent and return the text response (raw CRM data).
+
+    The green-agent at port 9009 is an A2A server, not an MCP server.
+    This function speaks A2A protocol: tries message/send (SDK v0.2.x) then tasks/send (legacy).
+    Returns the text content of the response, or "" on failure.
+    """
+    import uuid as _uuid
+
+    # Ask the green-agent for the raw CRM data records, not the computed answer.
+    data_prompt = (
+        "Return the relevant CRM data records as JSON for the following task. "
+        "Do not compute the answer — only return the raw data records.\n\n"
+        f"Task: {prompt[:600]}"
+    )
+
+    async with httpx.AsyncClient(timeout=TOOL_TIMEOUT * 3) as client:
+        # ── Try message/send (A2A SDK v0.2.x) ────────────────────────────────
+        try:
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "message/send",
+                "params": {
+                    "message": {
+                        "role": "user",
+                        "parts": [{"type": "text", "text": data_prompt}],
+                    },
+                },
+            }
+            resp = await client.post(endpoint, json=payload)
+            if resp.status_code == 200:
+                data = resp.json()
+                result = data.get("result", {})
+                parts = result.get("parts", [])
+                for part in parts:
+                    text = part.get("text", "")
+                    if text:
+                        print(f"[a2a] message/send fetched from {endpoint} len={len(text)}", flush=True)
+                        return text
+        except Exception as e:
+            print(f"[a2a] message/send failed {endpoint}: {e}", flush=True)
+
+        # ── Try tasks/send (legacy A2A) ───────────────────────────────────────
+        try:
+            task_id = str(_uuid.uuid4())
+            payload2 = {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tasks/send",
+                "params": {
+                    "id": task_id,
+                    "message": {
+                        "role": "user",
+                        "parts": [{"type": "text", "text": data_prompt}],
+                    },
+                },
+            }
+            resp2 = await client.post(endpoint, json=payload2)
+            if resp2.status_code == 200:
+                data2 = resp2.json()
+                result2 = data2.get("result", {})
+                # Check artifacts (standard A2A response)
+                for art in result2.get("artifacts", []):
+                    for part in art.get("parts", []):
+                        text = part.get("text", "")
+                        if text:
+                            print(f"[a2a] tasks/send artifact fetched from {endpoint} len={len(text)}", flush=True)
+                            return text
+                # Check status.message (some A2A implementations)
+                status_msg = result2.get("status", {}).get("message", {})
+                if status_msg:
+                    for part in status_msg.get("parts", []):
+                        text = part.get("text", "")
+                        if text:
+                            print(f"[a2a] tasks/send status.message fetched len={len(text)}", flush=True)
+                            return text
+        except Exception as e:
+            print(f"[a2a] tasks/send failed {endpoint}: {e}", flush=True)
+
+    print(f"[a2a] no data from A2A at {endpoint}", flush=True)
+    return ""
+
+
 def _parse_jsonrpc_result(data: dict) -> dict:
     """Parse a JSON-RPC tool call response into a plain dict."""
     if "error" in data:

@@ -1338,7 +1338,18 @@ async def _crm_fetch_context_via_tools(
         return ""
 
     if not tools:
-        print(f"[crm-tools] no tools at {tools_endpoint}", flush=True)
+        print(f"[crm-tools] no MCP tools at {tools_endpoint}, trying A2A protocol", flush=True)
+        from src.mcp_bridge import fetch_via_a2a
+        try:
+            a2a_text = await asyncio.wait_for(
+                fetch_via_a2a(tools_endpoint, prompt, session_id),
+                timeout=20.0,
+            )
+            if a2a_text and len(a2a_text.strip()) > 10:
+                print(f"[crm-tools] A2A returned len={len(a2a_text)} cat={category}", flush=True)
+                return a2a_text
+        except Exception as _e:
+            print(f"[crm-tools] A2A fallback failed: {_e}", flush=True)
         return ""
 
     tools_for_claude = [
