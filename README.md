@@ -1,7 +1,8 @@
 # agent-business-process — BrainOS Mini AI Worker
 
-> **τ²-Bench: 3/3 tasks · 100% pass rate · #1 globally** (airline domain)
-> One of five BrainOS Mini AI Workers — each a self-contained cognitive unit built on the **Reflexive Agent Architecture**.
+> **τ²-Bench: 3/3 · 100% · #1 globally** (airline domain)
+> **CRMArenaPro: Run 8 in progress** — 2140 tasks, 22 CRM categories
+> One of five BrainOS Mini AI Workers built on the **Reflexive Agent Architecture**.
 
 ---
 
@@ -113,16 +114,16 @@ Before each task, the top-3 most relevant past cases (by Jaccard keyword overlap
 
 ---
 
-## Benchmark
+## Benchmarks
 
-| Benchmark | Score | Metric | Rank |
-|-----------|-------|--------|------|
-| **τ²-Bench (airline domain)** | **3/3** | **100% pass rate** | **#1 globally** |
-| **CRMArenaPro** | **Run 5 in progress** | 2140 tasks, 21 CRM categories | TBD |
+| Benchmark | Score | Details | Rank |
+|-----------|-------|---------|------|
+| **τ²-Bench (airline domain)** | **3/3 · 100%** | Cancel → rebook → certificate chains | **#1 globally** |
+| **CRMArenaPro** | Run 8 in progress | 2140 tasks · 22 categories · 60s/task | TBD |
 
-τ²-Bench competitor (agentbeater baseline): 2/3 · 66.7%
+**τ²-Bench** — agentbeater baseline: 2/3 (66.7%). Our agent: 3/3 (100%) via reflexive injection + FSM phase separation.
 
-CRMArenaPro Run 4 baseline: 443/2140 (20.7%, avg score 60.2). Run 5 adds code execution engine + Brain/Router.
+**CRMArenaPro** — Two-stage code execution engine: Sonnet generates Python → sandboxed subprocess → retry with actual field names and error context. Handles 18 analytical categories (aggregations, date math, routing), 2 text Q&A categories, 2 privacy refusal categories.
 
 ---
 
@@ -213,17 +214,11 @@ docker run -e ANTHROPIC_API_KEY=sk-ant-... \
 ## Tech Stack
 
 - **Runtime:** Python 3.11 · FastAPI · uvicorn
-- **LLM:** claude-haiku-4-5-20251001 (classification, synthesis, audit) · claude-sonnet-4-6 (COMPUTE, MUTATE)
+- **LLM:** claude-haiku-4-5 (classification, audit) · claude-sonnet-4-6 (reasoning, code generation, MUTATE)
 - **FSM:** Custom 8-state engine · dynamic synthesis for novel process types
-- **Strategy:** UCB1 bandit over fsm / five_phase / moa (+ CRM Router via Brain)
-- **Core library:** [brainos-core-light](https://github.com/abhishec/brainoscorelight) v0.3.0
-  - `Brain` + `Router` — UCB1 strategy bandit + 5-layer memory (WorkingMemory · EpisodicMemory · SemanticMemory · StrategicMemory · MetaMemory)
-  - `DAAO` — zero-LLM model routing (Haiku classification, Sonnet reasoning)
-  - `MutationContract` — verify write tools called when task requires mutation
-  - `CodeExecutor` — LLM → Python → subprocess sandbox (CRM analytical categories)
-  - `PrivacyGuard` — PII detection before any API call
-- **Numerics:** `decimal.Decimal` in sandboxed tool execution
-- **RL:** UCB1 + case log + quality scoring + knowledge extraction + sequence graph (EMA)
+- **Strategy:** UCB1 bandit over fsm / five_phase / moa; CRM Router via brainos-core
+- **Code execution:** Sonnet → Python → async sandboxed subprocess (asyncio.Semaphore(15)) · retry with error + actual field names injected
+- **RL:** UCB1 + case log + quality scoring + knowledge extraction + sequence graph (EMA α=0.3)
 - **Protocol:** A2A JSON-RPC 2.0
 
 ---
