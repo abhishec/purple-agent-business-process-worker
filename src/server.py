@@ -1221,6 +1221,8 @@ CRITICAL output rules — violating these = wrong answer:
 - Print ONLY the final answer on the LAST line, nothing else after it
 - After printing the final answer, do NOT print anything else (no "Done", no debug, no explanation)
 - NEVER use labeled print like print(f"Agent: {name}") or print(f"Count: {n}") — just print(name) or print(n)
+- When using Counter or groupby: ALWAYS filter None values: Counter(r['f'] for r in data if r.get('f'))
+- If the most-frequent/best value is None after filtering: print(None)
 - IDs: exact ID string as-is (e.g., 005Wt000003NIiTIAW)
 - Names/values: exact string as in data
 - Months: full month name (January, February, ... December) — use strftime('%B'), never use month number
@@ -1257,8 +1259,10 @@ _CRM_CATEGORY_HINTS = {
         "Return exact name string. print(None) if no rule matches."
     ),
     "transfer_count": (
-        "Count how many times the case was transferred. "
-        "Look for TransferCount field or count status changes."
+        "Count case transfers. "
+        "FIRST: check if data[0] has a 'TransferCount' (or 'transfer_count') field — if so, print it directly. "
+        "If not: count records where Status/PreviousStatus contains 'Transfer', or count DISTINCT queue changes. "
+        "Output: just the integer count."
     ),
     "sales_amount_understanding": (
         "Calculate sum, average, or find specific sales amounts. "
@@ -1277,8 +1281,10 @@ _CRM_CATEGORY_HINTS = {
         "Look for IsConverted, ConvertedDate, or Status='Closed Won' fields."
     ),
     "best_region_identification": (
-        "Find which region/state has highest metric. "
-        "Group by region/state field, sum/count, find max."
+        "Find which region/state/territory has highest metric (sales, count, etc.). "
+        "Try region field names: Region, State, Territory, BillingState, BillingCountry. "
+        "Group by region (exclude None), sum/count metric, find the max group. "
+        "Output: exact region string as it appears in data."
     ),
     "lead_qualification": (
         "Data is for ONE specific lead (entity-specific task). "
@@ -1312,8 +1318,10 @@ _CRM_CATEGORY_HINTS = {
         "print(None) only if no data exists for the question."
     ),
     "top_issue_identification": (
-        "Find most frequent case category/issue type. "
-        "Use Counter on category/type field; find most_common(1)[0]."
+        "Find the most frequent issue category/type across all cases. "
+        "Try fields in order: Type, Category, Subject, Priority, Reason. "
+        "Use Counter: c = Counter(r.get('Type') for r in data if r.get('Type')). "
+        "print(c.most_common(1)[0][0]) — just the string value, not the count."
     ),
     "named_entity_disambiguation": (
         "Data has records for a specific contact/entity. "
