@@ -2391,6 +2391,15 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
             if _extracted and len(_extracted) < len(stripped):
                 print(f"[crm] label-extract cat={category} {stripped[:40]!r}→{_extracted!r}", flush=True)
                 stripped = _extracted
+        # Strip trailing parenthetical explanation: "Closed Won (per StageName)" → "Closed Won"
+        # LLMs often add "(based on X)", "(per field Y)", "(as in data)" after the value
+        _paren_m = _re_pp.match(r'^(.+?)\s+\((?:[^()]{1,80})\)\.?$', stripped)
+        if _paren_m:
+            _no_paren = _paren_m.group(1).strip()
+            # Only strip if the remaining value is plausibly short (not stripping into noise)
+            if _no_paren and len(_no_paren) <= 80 and len(_no_paren) < len(stripped):
+                print(f"[crm] strip-paren cat={category} {stripped[:50]!r}→{_no_paren!r}", flush=True)
+                stripped = _no_paren
         # Strip trailing noise noun after a number: "42 records" → "42", "0 cases" → "0"
         # Protects against LLM saying "42 leads" when we expect just "42"
         if stripped and _re_pp.match(r'^\d', stripped):
