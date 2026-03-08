@@ -1384,7 +1384,7 @@ _CRM_CATEGORY_HINTS = {
         "Find the record where ALL criteria match. "
         "Return: the exact Id if asked for ID; exact Name/FullName if asked for name; "
         "or the exact requested field value from the matching record. "
-        "If no single record matches, or data is empty: print(None)."
+        "If no single record matches, or data is empty: return None."
     ),
     "invalid_config": (
         "This is ONE specific quote/record. "
@@ -1392,10 +1392,7 @@ _CRM_CATEGORY_HINTS = {
         "If a field is invalid: return the exact field NAME (e.g., 'DiscountRate') or the invalid value. "
         "If all fields are valid per the criteria: return None."
     ),
-    "internal_operation_data": (
-        "Find operations matching the criteria. Print ALL matching IDs as a list, or print(None) if none match. "
-        "Look for SLA violations, escalations, status mismatches."
-    ),
+    # internal_operation_data: private category — always hard-refused, hint never used.
     "quote_approval": (
         "This is ONE specific quote record. "
         "Check the approval status, amount thresholds, or workflow stage per the question rules. "
