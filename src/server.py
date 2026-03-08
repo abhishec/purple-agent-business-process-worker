@@ -1010,6 +1010,12 @@ _CRM_ENTITY_SPECIFIC_CATEGORIES = {
     "quote_approval", "named_entity_disambiguation",
 }
 
+# Simple code_exec categories: routing/counting tasks safe for Haiku (saves ~$4.65/run)
+# Pattern: rules explicitly stated in question text → simple if/elif or count logic
+_CRM_HAIKU_EXEC_CATEGORIES = {
+    "lead_routing", "case_routing", "transfer_count",
+}
+
 # ── Field drift aliases for medium-level schema drift (hardcoded by evaluator) ─
 _CRM_DRIFT_NOTE = (
     "Field name aliases (renamed in this data): "
@@ -1763,8 +1769,9 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
     """
     import anthropic as _anthropic
     import time as _time_exec
-    # code_exec always uses Sonnet — analytics are never simple enough for Haiku
-    code_model = FALLBACK_MODEL
+    # Simple routing/count categories use Haiku (explicit rules in question → no complex reasoning)
+    # All others use Sonnet — aggregation/analytics require complex Python generation
+    code_model = FAST_MODEL if category in _CRM_HAIKU_EXEC_CATEGORIES else FALLBACK_MODEL
 
     # Two-level context handling:
     # - ctx_sandbox: FULL context for sandbox code execution (no truncation)
@@ -1833,7 +1840,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
                 model=code_model,
                 max_tokens=1500,
                 temperature=0.2,   # low temp = deterministic, fewer hallucinated field names
-                system=_CODE_EXEC_SYSTEM,
+                system=[{"type": "text", "text": _CODE_EXEC_SYSTEM, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": user_msg}],
             ),
             timeout=20.0,
@@ -1993,7 +2000,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
                 model=code_model,
                 max_tokens=1200,
                 temperature=0.1,   # even lower on retry — target the specific error precisely
-                system=_CODE_EXEC_SYSTEM,
+                system=[{"type": "text", "text": _CODE_EXEC_SYSTEM, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": retry_msg}],
             ),
             timeout=20.0,
