@@ -1010,10 +1010,13 @@ _CRM_ENTITY_SPECIFIC_CATEGORIES = {
     "quote_approval", "named_entity_disambiguation",
 }
 
-# Simple code_exec categories: routing/counting tasks safe for Haiku (saves ~$4.65/run)
-# Pattern: rules explicitly stated in question text → simple if/elif or count logic
+# Code_exec categories routed to Haiku (cheap fast model) instead of Sonnet.
+# Criteria: single-record field lookups OR explicit if/elif rules → no complex reasoning.
+# Routing, counting, single-record validation/lookup all qualify.
+# Added lead_qualification/quote_approval/invalid_config: single-record, hint has full logic.
 _CRM_HAIKU_EXEC_CATEGORIES = {
     "lead_routing", "case_routing", "transfer_count",
+    "lead_qualification", "quote_approval", "invalid_config",
 }
 
 # ── Field drift aliases for medium-level schema drift (hardcoded by evaluator) ─
@@ -1850,7 +1853,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         resp = await asyncio.wait_for(
             client.messages.create(
                 model=code_model,
-                max_tokens=1500,
+                max_tokens=900,  # CRM code is ~20-30 lines; 900 tokens is generous headroom
                 temperature=0.2,   # low temp = deterministic, fewer hallucinated field names
                 system=[{"type": "text", "text": _CODE_EXEC_SYSTEM, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": user_msg}],
@@ -1905,11 +1908,14 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         "    if parsed is None:\n"
         "        try: parsed = list(csv.DictReader(io.StringIO(s)))\n"
         "        except: parsed = []\n"
-        "    # If dict: extract the longest list value as records\n"
+        "    # If dict: extract the most-likely CRM records list\n"
         "    if isinstance(parsed, dict):\n"
         "        lists = [(k, v) for k, v in parsed.items() if isinstance(v, list)]\n"
         "        if lists:\n"
-        "            parsed = max(lists, key=lambda x: len(x[1]))[1]\n"
+        "            # Bug 094: prefer lists of dicts (CRM records) over error/meta lists\n"
+        "            _bad = {'errors','error','warnings','warning','metadata','pagination','__errors','messages'}\n"
+        "            _rec = [(k, v) for k, v in lists if v and isinstance(v[0], dict) and k.lower() not in _bad]\n"
+        "            parsed = max(_rec, key=lambda x: len(x[1]))[1] if _rec else max(lists, key=lambda x: len(x[1]))[1]\n"
         "        else:\n"
         "            parsed = [parsed]\n"
         "    if not isinstance(parsed, list): parsed = [parsed] if parsed else []\n"
@@ -1937,31 +1943,34 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
 
     # Retry: provide error + previous code + actual field names + targeted fix hints
     error_hint = f"Error from previous attempt: {exec_error}" if exec_error else "Previous code produced no output"
-    # Extract actual field names from the JSON data to help fix KeyError failures
+    # Extract actual field names from the FULL data to help fix KeyError failures
+    # Bug 097: was parsing ctx (sample, may be truncated) — use ctx_sandbox (full data)
     _field_hint = ""
     try:
         import json as _j, ast as _ast, re as _re_fh
         _ctx_data = None
         try:
-            _ctx_data = _j.loads(ctx)
+            _ctx_data = _j.loads(ctx_sandbox)
         except Exception:
-            # Try each '[' or '{' position — handle '[System Notice:...]' prefixes
-            for _m in _re_fh.finditer(r'[\[{]', ctx):
+            for _m in _re_fh.finditer(r'[\[{]', ctx_sandbox):
                 try:
-                    _p, _ = _j.JSONDecoder().raw_decode(ctx, _m.start())
+                    _p, _ = _j.JSONDecoder().raw_decode(ctx_sandbox, _m.start())
                     if isinstance(_p, (list, dict)) and _p:
                         _ctx_data = _p; break
                 except Exception:
                     continue
         if _ctx_data is None:
-            try: _ctx_data = _ast.literal_eval(ctx)
+            try: _ctx_data = _ast.literal_eval(ctx_sandbox)
             except Exception: pass
         if isinstance(_ctx_data, list) and _ctx_data and isinstance(_ctx_data[0], dict):
-            _field_hint = f"\nActual fields in data[0]: {list(_ctx_data[0].keys())}"
+            # Union of keys from first 5 records (sparse data may have fields only in later records)
+            _all_keys = list(dict.fromkeys(k for r in _ctx_data[:5] if isinstance(r, dict) for k in r.keys()))
+            _field_hint = f"\nActual fields available: {_all_keys}"
         elif isinstance(_ctx_data, dict):
             for _v in _ctx_data.values():
                 if isinstance(_v, list) and _v and isinstance(_v[0], dict):
-                    _field_hint = f"\nActual fields in data[0]: {list(_v[0].keys())}"
+                    _all_keys = list(dict.fromkeys(k for r in _v[:5] if isinstance(r, dict) for k in r.keys()))
+                    _field_hint = f"\nActual fields available: {_all_keys}"
                     break
     except Exception:
         pass
@@ -2010,7 +2019,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         resp2 = await asyncio.wait_for(
             client.messages.create(
                 model=code_model,
-                max_tokens=1200,
+                max_tokens=800,  # retry: targeted fix → even shorter code
                 temperature=0.1,   # even lower on retry — target the specific error precisely
                 system=[{"type": "text", "text": _CODE_EXEC_SYSTEM, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": retry_msg}],
@@ -2445,15 +2454,24 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
     if answer and answer != "None" and category in _CRM_ANALYTICAL_CATEGORIES:
         import re as _re_check
         _a = answer.strip()
+        # Bug 096: pre-strip trailing newline+parenthetical before reasoning check.
+        # "September\n(highest sales month)" should become "September", not be rejected.
+        if '\n' in _a and not (_a.startswith('[') and _a.endswith(']')):
+            _a_precleaned = _re_check.sub(r'\n\((?:[^()]{1,120})\)\.?$', '', _a).strip()
+            if _a_precleaned and '\n' not in _a_precleaned:
+                _a = _a_precleaned  # safe: single-line answer after stripping note
         _is_reasoning = (
-            # Multi-line output that's not a list
+            # Multi-line output that's not a list (after pre-clean above)
             ('\n' in _a and not (_a.startswith('[') and _a.endswith(']')))
-            # Starts with reasoning verbs
+            # Starts with reasoning verbs / conclusion markers
             or bool(_re_check.match(
                 r'^(?:i (?:need|want|will|can|should|must|have)|'
                 r'let me|to find|then find|first|next|finally|'
                 r'##|the (?:following|steps?|process|approach)|'
-                r'based on (?:the )?(?:above|following))',
+                r'based on (?:the )?(?:above|following)|'
+                r'in conclusion|to summarize|as a result|as you can see|'
+                r'based on my analysis|after (?:analysis|reviewing)|'
+                r'the data shows?|looking at the)',
                 _a, _re_check.IGNORECASE))
             # Very long reasoning-style text (> 120 chars without being a list or dict)
             or (len(_a) > 120 and not _a.startswith('[') and not _a.startswith('{'))
@@ -2464,6 +2482,9 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
         if _is_reasoning:
             print(f"[crm] rejected reasoning text cat={category} ans={_a[:60]!r} → None", flush=True)
             answer = "None"
+        elif _a != answer.strip():
+            # Pre-clean stripped a trailing note — use cleaned value
+            answer = _a
 
     # ── Post-process: strip common LLM prefix noise from short answers ────────
     # e.g. "The answer is September." → "September"
@@ -2488,7 +2509,7 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
             r'|after (?:analyzing|reviewing|examining|scanning) (?:the )?(?:data|context|crm data)[,:]?\s*'
             r'|in (?:the )?(?:data|context|crm data|crm records?)[,:]?\s*'
             r'|i need to (?:find|look|check|analyze|determine|identify|scan)[\w\s,]*?[,:]\s*'
-            r'|i\'ll (?:find|look|check|analyze|determine|identify|scan)[\w\s,]*?[,:]\s*'
+            r"|i'll (?:find|look|check|analyze|determine|identify|scan)[\w\s,]*?[,:]\s*"  # Bug 095: r'i\'ll' is backslash+apostrophe in raw string, never matches i'll
             r')\s*',
             '',            # replacement: empty string
             _ans_stripped,
