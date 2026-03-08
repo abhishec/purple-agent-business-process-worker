@@ -1274,16 +1274,18 @@ _CRM_CATEGORY_HINTS = {
     ),
     "transfer_count": (
         "Count case transfers. "
-        "FIRST: check if data[0] has a 'TransferCount' (or 'transfer_count') field — if so, print it directly. "
-        "If not: count records where Status/PreviousStatus contains 'Transfer', or count DISTINCT queue changes. "
-        "Output: just the integer count."
+        "FIRST: check if data[0] has 'TransferCount'/'transfer_count' field: "
+        "tc = data[0].get('TransferCount') if data else None; "
+        "if tc is not None: print(int(tc)) — NOTE: 0 is a valid count, use 'is not None' not just 'if tc'. "
+        "If field missing: count records where Status/PreviousStatus contains 'Transfer', or count DISTINCT queue changes. "
+        "Output: integer only (print 0 if no transfers found)."
     ),
     "sales_amount_understanding": (
         "Aggregate Amount, TotalAmount, Revenue, ARR, MRR, or SalesAmount fields. "
-        "For sum: int(sum(v for r in data if (v := r.get('Amount')) is not None)). "
-        "For average: round(statistics.mean([v for r in data if r.get('Amount') is not None]), 2). "
-        "Filter by StageName/Status (e.g., 'Closed Won'), date range, owner, or region as question specifies. "
-        "Skip None values. int() for whole-number results, round(x, 2) for decimals."
+        "Filter by StageName/Status (e.g., 'Closed Won'), date range, owner, or region per the question. "
+        "Skip None values: vals = [r.get('Amount') for r in data if r.get('Amount') is not None]. "
+        "Sum: int(sum(vals)) if whole. Average: round(statistics.mean(vals), 2). "
+        "If no matching records, return 0 for count/sum, None if question is not a count."
     ),
     "handle_time": (
         "Calculate handle time across ALL cases. "
