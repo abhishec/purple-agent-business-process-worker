@@ -1964,9 +1964,12 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
 
     # ── Hard overrides: force correct strategy per category type ───────────
     # The UCB1 Router starts in explore mode and may suggest wrong strategies.
-    # - Analytics MUST use code_exec (Python > LLM for numeric aggregation)
+    # - Entity-specific: simple field reads → llm_direct (code_exec is overkill / slow)
+    # - Aggregate analytics: MUST use code_exec (Python > LLM for numeric aggregation)
     # - Text QA MUST use llm_direct (no Python needed for reading comprehension)
-    if category in _CRM_ANALYTICAL_CATEGORIES:
+    if category in _CRM_ENTITY_SPECIFIC_CATEGORIES:
+        strategy = "llm_direct"  # single-record read: LLM is faster and more accurate
+    elif category in _CRM_ANALYTICAL_CATEGORIES:
         strategy = "code_exec"
     elif category in _CRM_TEXT_CATEGORIES:
         strategy = "llm_direct"
