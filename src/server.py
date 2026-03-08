@@ -1387,7 +1387,7 @@ _CRM_CATEGORY_HINTS = {
         "  _yr_m_sa=re.search(r'\\b(20\\d{2})\\b', prompt_text); _yr_sa=int(_yr_m_sa.group(1)) if _yr_m_sa else None. "
         "  _stage_sa=next((v for k,v in {'closed won':'Closed Won','won':'Closed Won','closed lost':'Closed Lost'}.items() if k in _q), None). "
         "  filtered=list(data). "
-        "  if _stage_sa: filtered=[r for r in filtered if (r.get('StageName') or r.get('Stage') or r.get('OpportunityStage') or '').lower()==_stage_sa.lower()]. "
+        "  if _stage_sa: filtered=[r for r in filtered if (r.get('StageName') or r.get('Stage') or r.get('OpportunityStage') or '').strip().lower()==_stage_sa.lower()]. "  # Bug 108: strip whitespace
         "  if _yr_sa: filtered=[r for r in filtered if _safe_date(r.get('CloseDate') or r.get('ClosedDate') or r.get('ResolvedDate') or r.get('CompletedDate') or r.get('CreatedDate')) and _safe_date(r.get('CloseDate') or r.get('ClosedDate') or r.get('ResolvedDate') or r.get('CompletedDate') or r.get('CreatedDate')).year==_yr_sa]. "
         "  elif cutoff: filtered=[r for r in filtered if _safe_date(r.get('CloseDate') or r.get('ClosedDate') or r.get('CompletedDate') or r.get('CreatedDate')) and _safe_date(r.get('CloseDate') or r.get('ClosedDate') or r.get('CompletedDate') or r.get('CreatedDate'))>=cutoff].  # Bug 087: full date chain for cutoff "
         "vals = [float(r.get(_af)) for r in filtered if r.get(_af) is not None]. "
@@ -1420,7 +1420,7 @@ _CRM_CATEGORY_HINTS = {
         "    for r in rows: "
         "      s = _safe_date(r.get('CreatedDate')). "
         "      e = _safe_date(r.get('ClosedDate') or r.get('ResolvedDate') or r.get('SolvedDate') or r.get('CompletedDate')). "
-        "      if s and e: durations.append((e-s).total_seconds()). "
+        "      if s and e and e >= s: durations.append((e-s).total_seconds()).  # Bug 109: guard e>=s "
         "    raw = (max(durations) if _is_max_ht else (min(durations) if _is_min_ht else (sum(durations) if ('total' in _q or 'sum' in _q) else (statistics.median(durations) if 'median' in _q else statistics.mean(durations))))) if durations else None.  # Bug 078: add sum mode to match pre-computed path "
         "    divisor = 1 if 'second' in _q else (3600 if 'hour' in _q else (86400 if 'day' in _q else 60)). "
         "    val = raw / divisor if raw is not None else None. "
@@ -1428,7 +1428,7 @@ _CRM_CATEGORY_HINTS = {
     ),
     "conversion_rate_comprehension": (
         "Calculate conversion rate or converted count. "
-        "def is_true(v): return v in (True,'true','True','Yes','yes','1',1). "
+        "def is_true(v): return v in (True,'true','True','TRUE','Yes','YES','yes','1',1).  # Bug 110: add TRUE/YES variants "
         "_q = prompt_text.lower(). "
         "_is_count_q = bool(re.search(r'\\bhow many\\b|\\bcount\\b', _q)).  # word boundary — avoid 'account'/'discount' false match "
         "Year pre-filter — apply BEFORE any computation (Lesson S): "
@@ -1458,7 +1458,7 @@ _CRM_CATEGORY_HINTS = {
         "  _stage_map={'closed won':'Closed Won','won':'Closed Won','closed lost':'Closed Lost'}. "
         "  _stage=next((v for k,v in _stage_map.items() if k in _q), None). "
         "  rows=list(data). "
-        "  if _stage: rows=[r for r in rows if (r.get('StageName') or r.get('Stage') or r.get('OpportunityStage') or '').lower()==_stage.lower()]. "
+        "  if _stage: rows=[r for r in rows if (r.get('StageName') or r.get('Stage') or r.get('OpportunityStage') or '').strip().lower()==_stage.lower()]. "  # Bug 108: strip
         "  if _yr: rows=[r for r in rows if _safe_date(r.get('CloseDate') or r.get('ClosedDate') or r.get('ResolvedDate') or r.get('CompletedDate') or r.get('CreatedDate')) and _safe_date(r.get('CloseDate') or r.get('ClosedDate') or r.get('ResolvedDate') or r.get('CompletedDate') or r.get('CreatedDate')).year==_yr]. "
         "_rf=next((f for f in ['Region','State','Territory','BillingState','BillingCountry','Country'] if any(r.get(f) for r in data[:5])), 'Region').  # Bug 092: check data[:5] "
         "_is_lowest = any(w in _q for w in ['lowest','least','worst','minimum','fewest','bottom','smallest','min']). "
@@ -1520,13 +1520,13 @@ _CRM_CATEGORY_HINTS = {
         "Pre-filter by stage + year from prompt_text (Lesson S): "
         "  _smap={'closed won':'Closed Won','won':'Closed Won','closed lost':'Closed Lost'}. "
         "  _sc_stage=next((v for k,v in _smap.items() if k in _q), None). "
-        "  rows=[r for r in data if (r.get('StageName') or r.get('Stage') or r.get('OpportunityStage') or '').lower()==_sc_stage.lower()] if _sc_stage else list(data). "
+        "  rows=[r for r in data if (r.get('StageName') or r.get('Stage') or r.get('OpportunityStage') or '').strip().lower()==_sc_stage.lower()] if _sc_stage else list(data). "  # Bug 108
         "  _yr_m_sc=re.search(r'\\b(20\\d{2})\\b', prompt_text); _yr_sc=int(_yr_m_sc.group(1)) if _yr_m_sc else None. "
         "  if _yr_sc: rows=[r for r in rows if _safe_date(r.get('CloseDate') or r.get('ClosedDate') or r.get('ResolvedDate') or r.get('CompletedDate') or r.get('CreatedDate')) and _safe_date(r.get('CloseDate') or r.get('ClosedDate') or r.get('ResolvedDate') or r.get('CompletedDate') or r.get('CreatedDate')).year==_yr_sc]. "
         "durations = []. "
         "for r in rows: "
         "  s=_safe_date(r.get('CreatedDate')); e=_safe_date(r.get('CloseDate') or r.get('ClosedDate') or r.get('ResolvedDate') or r.get('CompletedDate') or r.get('SolvedDate') or r.get('WonDate')).  # Bug 076: add ClosedDate/ResolvedDate "
-        "  if s and e: durations.append((e-s).total_seconds()/86400).  # raw days (float) "
+        "  if s and e and e >= s: durations.append((e-s).total_seconds()/86400).  # raw days; Bug 109: guard e>=s, skip invalid pairs "
         "_is_max_sc = any(w in _q for w in ['longest','maximum','max','slowest']). "
         "_is_min_sc = any(w in _q for w in ['shortest','minimum','min','fastest','quickest']). "
         "_is_sum_sc = 'total' in _q or 'sum' in _q. "
@@ -1546,7 +1546,7 @@ _CRM_CATEGORY_HINTS = {
         "  _stage_map={'closed won':'Closed Won','won':'Closed Won','closed lost':'Closed Lost'}. "
         "  _stage=next((v for k,v in _stage_map.items() if k in _q), None). "
         "  rows=list(data). "
-        "  if _stage: rows=[r for r in rows if (r.get('StageName') or r.get('Stage') or r.get('OpportunityStage') or '').lower()==_stage.lower()]. "
+        "  if _stage: rows=[r for r in rows if (r.get('StageName') or r.get('Stage') or r.get('OpportunityStage') or '').strip().lower()==_stage.lower()]. "  # Bug 108
         "  if _yr: rows=[r for r in rows if _safe_date(r.get('CloseDate') or r.get('ClosedDate') or r.get('ResolvedDate') or r.get('CompletedDate') or r.get('CreatedDate')) and _safe_date(r.get('CloseDate') or r.get('ClosedDate') or r.get('ResolvedDate') or r.get('CompletedDate') or r.get('CreatedDate')).year==_yr]. "
         "Step 2 — groupby field from prompt_text: "
         "  if any(w in _q for w in ['product','item','sku']): _gf=next((f for f in ['ProductName','Product','Item','SKU','ProductFamily'] if any(r.get(f) for r in data[:5])), 'ProductName').  # Bug 092: data[:5] "
@@ -1581,7 +1581,7 @@ _CRM_CATEGORY_HINTS = {
         "  _df_ti = lambda r: _safe_date(r.get('CreatedDate') or r.get('Date') or r.get('ActivityDate')). "
         "  rows = [r for r in data if _df_ti(r) and _df_ti(r).year==_yr_ti] if _yr_ti else list(data). "
         "  _status_kw = next((v for k,v in {'open':'Open','closed':'Closed','resolved':'Resolved','escalated':'Escalated','pending':'Pending'}.items() if re.search(r'\\b'+k+r'\\b', _q)), None). "
-        "  if _status_kw: rows=[r for r in rows if (r.get('Status') or r.get('StatusCode') or '').lower()==_status_kw.lower()].  # Bug 088: filter by open/closed status when specified "
+        "  if _status_kw: rows=[r for r in rows if (r.get('Status') or r.get('StatusCode') or '').strip().lower()==_status_kw.lower()].  # Bug 088 + 108: strip whitespace "
         "Step 1 — pick the groupby field based on question keywords: "
         "  if any(w in _q for w in ['reason','cause']): _f = next((f for f in ['Reason','CaseReason','Category'] if any(r.get(f) for r in data[:5])), None). "  # Bug 092: data[:5]
         "  elif any(w in _q for w in ['type','case type']): _f = next((f for f in ['Type','CaseType','IssueType'] if any(r.get(f) for r in data[:5])), None). "
