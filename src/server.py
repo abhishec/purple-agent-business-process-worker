@@ -1248,11 +1248,12 @@ CRITICAL: Do NOT use import requests, urllib, or any network library.
 
 Using `data`:
 - `data` is already a list of dicts. Use it directly: for r in data: ...
-- Inspect field names: keys = list(data[0].keys()) if data else []
+- Inspect field names: keys = list(dict.fromkeys(k for r in data[:5] for k in r.keys())) if data else []  # Bug 112: use first 5 records to catch sparse fields
 - If data seems empty, you may re-parse: data = _normalize_context(context_data)
 - IGNORE any "[System Notice: ...]" or "[Note: ...]" text at the start of context_data — it is noise, not data
 - When accessing dict keys, try aliases: record.get('OwnerId') or record.get('AssignedAgent')
 - Check for None/null values before arithmetic: skip records where field is None or field == ''
+- For numeric field reads that may be None/empty/'N/A': use _safe_num(record.get('Score')) instead of float(record.get('Score') or 0) — _safe_num handles all null variants and comma-formatted numbers like '1,234.56'
 - ZeroDivisionError guard: if denominator (len(filtered) or total) could be 0, check first: if total > 0 else print(0) or print(None)
 - Integer output: if result is a whole number, use int(result) to avoid '3.0' instead of '3'
 - Nested fields: if a field is a dict, access nested values: record.get('Account', {}).get('Name')
@@ -1273,7 +1274,7 @@ Date handling:
 - Count by month: use Counter({d.strftime('%B'): count for d, count in ...})
 
 Conversion rate / percentage:
-- Boolean fields (IsConverted etc.) may be bool OR string: def is_true(v): return v in (True, 'true', 'True', 1, '1', 'Yes', 'yes', 'TRUE')
+- Boolean fields (IsConverted etc.) may be bool OR string: def is_true(v): return v in (True, 'true', 'True', 'TRUE', 1, '1', 'Yes', 'yes', 'YES')  # Bug 111: include YES/TRUE all-caps variants
 - If data has IsConverted/is_converted field: rate = sum(1 for r in data if is_true(r.get('IsConverted'))) / len(data) * 100
 - If data has a numeric rate/percentage field: use the value as-is (may be 25.5 or 0.255 — return what's in data)
 - Round to 2 decimal places: round(rate, 2)
@@ -1342,7 +1343,7 @@ _CRM_CATEGORY_HINTS = {
         "lead = data[0] if data else {}. "
         "Condition patterns (use the ones matching the question): "
         "  String equality: lead.get('LeadSource') == 'Web'. "
-        "  Numeric comparison (fields may be stored as strings): int(float(lead.get('Score') or 0)) >= 70. "
+        "  Numeric comparison (fields may be stored as strings): int(_safe_num(lead.get('Score'))) >= 70.  # Bug 114: _safe_num handles None/'N/A'/commas safely "
         "  Membership: lead.get('Region') in ('APAC', 'EMEA'). "
         "Write the actual if/elif using the EXACT team names and conditions from the question: "
         "  if lead.get('LeadSource') == 'Web': print('Inside Sales')  # example "
@@ -1842,7 +1843,9 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
             _found_nested = False
             for _v2 in _ctx_parsed.values():
                 if isinstance(_v2, list) and _v2 and isinstance(_v2[0], dict):
-                    _upfront_field_hint = f"\nActual fields available: {list(_v2[0].keys())}"
+                    # Bug 113: union of keys from first 5 records (same fix as Bug 093 for list path)
+                    _all_keys_v2 = list(dict.fromkeys(k for r in _v2[:5] if isinstance(r, dict) for k in r.keys()))
+                    _upfront_field_hint = f"\nActual fields available: {_all_keys_v2}"
                     _found_nested = True
                     break
             if not _found_nested:
@@ -1900,6 +1903,11 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         "    # Last resort: try parsing just the date portion\n"
         "    try: return dt.strptime(s[:10], '%Y-%m-%d')\n"
         "    except: return None\n"
+        "def _safe_num(v, default=0):\n"
+        "    '''Safely convert a field value to float — handles None, empty string, N/A, commas.'''\n"
+        "    if v in (None, '', 'N/A', 'n/a', 'na', 'NA', 'null', 'NULL', 'None', 'none'): return default\n"
+        "    try: return float(str(v).replace(',', ''))\n"
+        "    except: return default\n"
         "def _normalize_context(raw):\n"
         "    '''Pre-parse context: handles JSON array, JSON dict (extract largest list), CSV, mixed text.'''\n"
         "    s = raw.strip() if raw else ''\n"
