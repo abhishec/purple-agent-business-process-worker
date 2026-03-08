@@ -2204,9 +2204,9 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
         stripped = _re_pp.sub(
             r'^(?:the answer is|answer is|answer:|result:|the result is|the value is'
             r'|the total is|total:|the count is|count:|the number is|the number of \w+ is'
-            r'|the (?:best|top|highest|lowest|most|least) \w+ is'
-            r'|the (?:total|average|mean|median|sum) \w+ is'
-            r'|the \w+ with the (?:highest|lowest|most|best) \w+ is'
+            r'|the (?:best|top|highest|lowest|most|least)[\w-]* [\w-]+ is'
+            r'|the (?:total|average|mean|median|sum) [\w-]+ is'
+            r'|the [\w-]+ with the (?:highest|lowest|most|best) [\w-]+ is'
             r'|there (?:are|were|was|is) '
             r'|based on (?:the )?(?:data|context|crm data|crm records?|provided data)[,:]?\s*(?:the answer is\s*|it is\s*|the \w+ is\s*)?'
             r'|looking at (?:the )?(?:data|context|crm data|crm records?)[,:]?\s*'
