@@ -1303,9 +1303,10 @@ _CRM_CATEGORY_HINTS = {
         "Boolean fields may be bool OR string: check v in (True, 'true', 'True', 'Yes', '1', 1)."
     ),
     "best_region_identification": (
-        "Find which region/state/territory has highest metric (sales, count, etc.). "
-        "Try region field names: Region, State, Territory, BillingState, BillingCountry. "
-        "Group by region (exclude None), sum/count metric, find the max group. "
+        "Find which region has the highest (or lowest, per the question) metric. "
+        "Try region field names: Region, State, Territory, BillingState, BillingCountry, Province, Area, Zone. "
+        "Group by region (skip None/empty), aggregate metric (sum Amount or count records), "
+        "then max(grouped, key=grouped.get) or min() per the question. "
         "Output: exact region string as it appears in data."
     ),
     "lead_qualification": (
