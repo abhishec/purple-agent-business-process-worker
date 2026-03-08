@@ -1220,6 +1220,7 @@ Conversion rate / percentage:
 CRITICAL output rules — violating these = wrong answer:
 - Print ONLY the final answer on the LAST line, nothing else after it
 - After printing the final answer, do NOT print anything else (no "Done", no debug, no explanation)
+- NEVER use labeled print like print(f"Agent: {name}") or print(f"Count: {n}") — just print(name) or print(n)
 - IDs: exact ID string as-is (e.g., 005Wt000003NIiTIAW)
 - Names/values: exact string as in data
 - Months: full month name (January, February, ... December) — use strftime('%B'), never use month number
@@ -1244,12 +1245,16 @@ _CRM_CATEGORY_HINTS = {
         "Group by month, then find max/min."
     ),
     "lead_routing": (
-        "Determine which agent/team handles the lead based on routing rules. "
-        "Look for lead score, source, region, or product fields."
+        "Apply routing rules from the question to the lead record(s). "
+        "Read lead fields (LeadSource, Rating, Region, Product, Score, etc.) from data. "
+        "Match against routing rules stated in the question — output the agent/team name. "
+        "Return exact name string. print(None) if no rule matches."
     ),
     "case_routing": (
-        "Find which queue/agent handles the case. "
-        "Check priority, category, region, product fields."
+        "Apply routing rules from the question to the case record(s). "
+        "Read case fields (Priority, Category, Type, Region, Product, Status) from data. "
+        "Match against routing rules stated in the question — output the queue/agent name. "
+        "Return exact name string. print(None) if no rule matches."
     ),
     "transfer_count": (
         "Count how many times the case was transferred. "
@@ -1260,8 +1265,12 @@ _CRM_CATEGORY_HINTS = {
         "Look for Amount, TotalAmount, Revenue fields."
     ),
     "handle_time": (
-        "Calculate handle time between open/close timestamps. "
-        "Use _safe_date() for dates; compute timedelta in minutes or hours."
+        "Calculate average handle time across ALL cases. "
+        "Use _safe_date() for dates. Compute timedelta = close_date - open_date. "
+        "Output in MINUTES (most common). If question says hours: output hours. "
+        "Look for HandleTime, handle_time fields first — if present, average them directly. "
+        "Otherwise use CreatedDate/ClosedDate or CreatedDate/LastModifiedDate. "
+        "Round to 2 decimal places. Use int() if the result is a whole number."
     ),
     "conversion_rate_comprehension": (
         "Calculate conversion rate: converted/total * 100. "
@@ -1289,12 +1298,18 @@ _CRM_CATEGORY_HINTS = {
         "Answer: the correct stage name, the current stage, or None if cannot determine."
     ),
     "sales_cycle_understanding": (
-        "Analyze time between sales stages. "
-        "Use _safe_date() on CreatedDate and CloseDate; compute duration."
+        "Analyze sales cycle duration. "
+        "Use _safe_date() on CreatedDate and CloseDate (or StageName change dates). "
+        "Output duration in days (integer). Round to nearest whole day. "
+        "If question asks for average: average all durations with int() or round(x, 1)."
     ),
     "sales_insight_mining": (
-        "Extract sales insights: top performers, trends, patterns. "
-        "Aggregate by agent, region, product, or time period."
+        "Extract the key sales insight requested. "
+        "Return a SHORT exact value: agent name, region, product name, month, number. "
+        "Do NOT return a paragraph — just the name/value. "
+        "If question asks for top agent: return their exact name as in data. "
+        "If question asks for top region: return exact region/state value. "
+        "print(None) only if no data exists for the question."
     ),
     "top_issue_identification": (
         "Find most frequent case category/issue type. "
@@ -2036,11 +2051,12 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
                 r'##|the (?:following|steps?|process|approach)|'
                 r'based on (?:the )?(?:above|following))',
                 _a, _re_check.IGNORECASE))
-            # Contains colon with label (e.g. "Not Started Tasks count: 0")
-            or (': ' in _a and len(_a) > 30 and not _a.startswith('['))
-            # Very long reasoning-style text (> 120 chars without being a list)
+            # Very long reasoning-style text (> 120 chars without being a list or dict)
             or (len(_a) > 120 and not _a.startswith('[') and not _a.startswith('{'))
         )
+        # NOTE: Removed the '": " in _a' colon check — it was incorrectly rejecting valid
+        # "Label: value" answers like "Transfer count: 5" → None.  These are now handled
+        # by the label-extraction strip below instead.
         if _is_reasoning:
             print(f"[crm] rejected reasoning text cat={category} ans={_a[:60]!r} → None", flush=True)
             answer = "None"
@@ -2076,6 +2092,17 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
         )
         # Strip trailing period if it looks like added punctuation (not part of ID)
         stripped = stripped.rstrip('.')
+        # Extract "Label: value" format → value only
+        # e.g. "Transfer count: 5" → "5", "Assigned agent: John Smith" → "John Smith"
+        # Avoids losing data when code generates labeled print() instead of bare print()
+        # Only strip if label is a plausible descriptor (word chars + spaces before ': ')
+        _label_m = _re_pp.match(r'^[\w][\w\s]{2,40}:\s+(.+)$', stripped, _re_pp.IGNORECASE)
+        if _label_m:
+            _extracted = _label_m.group(1).strip().rstrip('.')
+            # Accept extraction only if the value is shorter (avoids stripping into noise)
+            if _extracted and len(_extracted) < len(stripped):
+                print(f"[crm] label-extract cat={category} {stripped[:40]!r}→{_extracted!r}", flush=True)
+                stripped = _extracted
         # Strip trailing noise noun after a number: "42 records" → "42", "0 cases" → "0"
         # Protects against LLM saying "42 leads" when we expect just "42"
         if stripped and _re_pp.match(r'^\d', stripped):

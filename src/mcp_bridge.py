@@ -7,6 +7,10 @@ from src.config import TOOL_TIMEOUT
 # Populated on first successful tool discovery to avoid double-requests on every call.
 _endpoint_format: dict[str, str] = {}
 
+# Endpoints confirmed to have no MCP tools (e.g. A2A task routers, auth errors).
+# Cached after first failed discovery to avoid redundant HTTP calls on every task.
+_no_tool_endpoints: set[str] = set()
+
 
 def validate_tool_call(
     tool_name: str,
@@ -79,6 +83,10 @@ async def discover_tools(tools_endpoint: str, session_id: str = "") -> list[dict
     """
     ep = tools_endpoint
 
+    # Fast path: skip endpoints confirmed to have no MCP tools (e.g. A2A task routers)
+    if ep in _no_tool_endpoints:
+        return []
+
     async with httpx.AsyncClient(timeout=TOOL_TIMEOUT) as client:
         # ── Format 1: JSON-RPC 2.0 (tau2-bench / standard MCP) ──────────────
         if _endpoint_format.get(ep) != "simple":
@@ -114,6 +122,7 @@ async def discover_tools(tools_endpoint: str, session_id: str = "") -> list[dict
             print(f"[mcp] simple GET discover failed for {ep}: {e}", flush=True)
 
     print(f"[mcp] discover_tools: no tools found at {ep}", flush=True)
+    _no_tool_endpoints.add(ep)  # cache: skip HTTP calls on subsequent tasks for this endpoint
     return []
 
 
