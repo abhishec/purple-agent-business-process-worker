@@ -2118,6 +2118,11 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
     # to exact "None" which is what the benchmark expects for missing-data tasks.
     if answer and answer.strip().lower() in {"none", "null", "n/a", "na", "undefined", "none."}:
         answer = "None"
+    # Empty list [] means no matches — normalize to "None"
+    # (activity_priority etc. use print([]) for no matches, but benchmark expects "None")
+    if answer and answer.strip() in {"[]", "[ ]"}:
+        print(f"[crm] empty-list→None cat={category}", flush=True)
+        answer = "None"
     # Catch short phrases containing "none" (e.g. "None found", "None available")
     # Only for very short strings to avoid false positives
     if (answer and category in _CRM_ANALYTICAL_CATEGORIES
