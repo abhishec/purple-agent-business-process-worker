@@ -1293,11 +1293,13 @@ _CRM_CATEGORY_HINTS = {
         "Output: integer only (print 0 if no transfers found)."
     ),
     "sales_amount_understanding": (
-        "Aggregate Amount, TotalAmount, Revenue, ARR, MRR, or SalesAmount fields. "
+        "Aggregate the amount field specified or implied in the question. "
+        "Amount field aliases: Amount, TotalAmount, Revenue, ARR, MRR, SalesAmount, DealValue, Price. "
+        "Find which field has data: _af = next((f for f in ['Amount','TotalAmount','Revenue','ARR','SalesAmount'] if data and data[0].get(f) is not None), 'Amount'). "
         "Filter by StageName/Status (e.g., 'Closed Won'), date range, owner, or region per the question. "
-        "Skip None values: vals = [r.get('Amount') for r in data if r.get('Amount') is not None]. "
-        "Sum: int(sum(vals)) if whole. Average: round(statistics.mean(vals), 2). "
-        "If no matching records, return 0 for count/sum, None if question is not a count."
+        "Skip None: vals = [float(r.get(_af)) for r in filtered if r.get(_af) is not None]. "
+        "Sum: total = sum(vals); print(int(total) if total == int(total) else round(total, 2)). "
+        "Average: round(statistics.mean(vals), 2) if vals else print(0 if count_question else None)."
     ),
     "handle_time": (
         "Calculate handle time across cases. "
