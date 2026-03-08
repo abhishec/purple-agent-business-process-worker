@@ -2067,9 +2067,14 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
                         timeout=min(_tool_budget - 2.0, 25.0),
                     )
                     if fetched and len(fetched.strip()) >= 30:
-                        context = fetched
-                        _src = "task-ep" if tools_endpoint else "green-mcp"
-                        print(f"[crm] fetched text-ctx cat={category} src={_src} len={len(context)}", flush=True)
+                        # For knowledge_qa with a long original KB article, prefer original over CRM records
+                        if category == "knowledge_qa" and _text_original_ctx and len(_text_original_ctx.strip()) > 200:
+                            context = _text_original_ctx
+                            print(f"[crm] knowledge_qa: keeping original KB text (len={len(_text_original_ctx)}) over fetched", flush=True)
+                        else:
+                            context = fetched
+                            _src = "task-ep" if tools_endpoint else "green-mcp"
+                            print(f"[crm] fetched text-ctx cat={category} src={_src} len={len(context)}", flush=True)
                     else:
                         if category == "knowledge_qa":
                             # Keep original context if non-empty (may be knowledge base text)
