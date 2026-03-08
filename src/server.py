@@ -1053,9 +1053,29 @@ def _context_has_real_data(context: str) -> bool:
     # Reject empty JSON structures — no real CRM data
     if ctx in ('{}', '[]', '{""}', "{''}"):
         return False
-    # JSON array or object → likely real data (even short JSON is real data)
-    if ctx.startswith('[') or ctx.startswith('{'):
+    # JSON array → real data (non-empty — empty [] handled above)
+    if ctx.startswith('['):
         return True
+    # JSON object → parse to check if it actually has record content
+    if ctx.startswith('{'):
+        # For small dicts (< 500 chars), do a deep check for empty wrappers
+        # e.g. {"records": []} or {"data": [], "total": 0} → no real CRM data
+        if len(ctx) < 500:
+            try:
+                import json as _jc
+                _d = _jc.loads(ctx)
+                if isinstance(_d, dict) and _d:
+                    _has_real = False
+                    for _v in _d.values():
+                        if isinstance(_v, list) and len(_v) > 0: _has_real = True; break
+                        if isinstance(_v, dict) and _v: _has_real = True; break
+                        if isinstance(_v, str) and _v.strip(): _has_real = True; break
+                        if isinstance(_v, (int, float)) and _v not in (0, 0.0, None): _has_real = True; break
+                    if not _has_real:
+                        return False  # wrapper dict with no meaningful content
+            except Exception:
+                pass  # parse error → fall through to return True (prefer false positive)
+        return True  # large dict or parse failed → assume real data
     # Check left-stripped in case of leading whitespace/newline
     lctx = ctx.lstrip()
     if lctx.startswith('[') or lctx.startswith('{'):
