@@ -1444,7 +1444,7 @@ _CRM_CATEGORY_HINTS = {
     "sales_insight_mining": (
         "Identify (1) what to GROUP BY from the question, (2) what metric to aggregate. "
         "Choose groupby field dynamically based on question: "
-        "  Agent/rep question: _gf = next((f for f in ['OwnerId','SalesRep','AgentName','AssignedTo','OwnerName','Owner'] if data and data[0].get(f)), 'OwnerId'). "
+        "  Agent/rep question: _gf = next((f for f in ['OwnerName','Owner','SalesRep','AgentName','AssignedTo','OwnerId'] if data and data[0].get(f)), 'OwnerId'). "  # prefer human-readable name over ID
         "  Product question:   _gf = next((f for f in ['ProductName','Product','Item','SKU','ProductFamily'] if data and data[0].get(f)), 'ProductName'). "
         "  Region question:    _gf = next((f for f in ['Region','Territory','BillingState','State','Area','Country'] if data and data[0].get(f)), 'Region'). "
         "Amount-based (highest revenue/sales by group): "
@@ -1468,12 +1468,13 @@ _CRM_CATEGORY_HINTS = {
     "named_entity_disambiguation": (
         "The data has multiple records for entities with similar names. Identify the ONE that matches ALL criteria in the question. "
         "Common disambiguation criteria: company/account name, city, state, email, phone, job title, related record ID, date. "
-        "Pattern: "
-        "matches = [r for r in data if all criteria match]. "
-        "E.g. if question says 'from Chicago' and 'works at Acme': "
+        "Build a filter with ALL criteria from the question using 'and': "
         "  matches = [r for r in data if r.get('City')=='Chicago' and r.get('Company')=='Acme']. "
-        "If matches has exactly 1 record: return the requested field from matches[0]. "
-        "Return: Id if asked for ID; Name/FullName if asked for name; else the specific requested field. "
+        "  matches = [r for r in data if r.get('Email')=='john@acme.com']. "
+        "  matches = [r for r in data if r.get('Phone')=='555-1234' and r.get('LastName')=='Smith']. "
+        "If len(matches) == 1: "
+        "  Return: r.get('Id') if asked for ID; r.get('Name') or r.get('FullName') if asked for name; "
+        "  or the specific requested field value from matches[0]. "
         "If 0 or 2+ records match (ambiguous): return None."
     ),
     "invalid_config": (
