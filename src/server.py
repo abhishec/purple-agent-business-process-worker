@@ -1285,7 +1285,7 @@ _CRM_CATEGORY_HINTS = {
         "Choose mode from question: "
         "  - Revenue/sales/amount questions → SUM mode. Find the amount field: "
         "    _af = next((f for f in ['Amount','Revenue','TotalAmount','SalesAmount','Value'] if data and data[0].get(f) is not None), 'Amount'). "
-        "    monthly[month] += (lambda v: float(v) if v is not None else 0)(r.get(_af)). "
+        "    v=r.get(_af); monthly[month] += float(v) if v is not None else 0. "
         "  - Count/volume/most-records questions → COUNT mode: monthly[month] += 1. "
         "Pattern: monthly = defaultdict(float); "
         "for r in data: d = _safe_date(r.get('CreatedDate')) or _safe_date(r.get('CloseDate')) or _safe_date(r.get('Date')) or _safe_date(r.get('ActivityDate')); "
@@ -1405,9 +1405,10 @@ _CRM_CATEGORY_HINTS = {
         "Pattern: "
         "durations = []; "
         "for r in data: s=_safe_date(r.get('CreatedDate')); e=_safe_date(r.get('CloseDate') or r.get('CompletedDate') or r.get('SolvedDate') or r.get('WonDate')); "
-        "(durations.append((e-s).days) if s and e else None). "
-        "Default unit: days. If question says hours: use total_seconds()/3600 instead of .days. "
-        "Result: round(statistics.mean(durations), 1) if durations else print(None). int() if whole number."
+        "if s and e: durations.append((e-s).total_seconds()/86400). "
+        "Default unit: DAYS (total_seconds()/86400). If question says hours: use total_seconds()/3600. "
+        "avg = statistics.mean(durations) if durations else None; "
+        "print(int(avg) if avg is not None and avg == int(avg) else round(avg, 1) if avg is not None else None)."
     ),
     "sales_insight_mining": (
         "Identify (1) what to GROUP BY from the question, (2) what metric to aggregate. "
