@@ -1408,7 +1408,7 @@ _CRM_CATEGORY_HINTS = {
         "    if not converted: converted = [r for r in pool if r.get('ConvertedDate')]. "
         "    if not converted: converted = [r for r in pool if r.get('Status','') in ('Closed Won','Converted','Won','Qualified')]. "
         "    if _is_count_q: print(len(converted)). "
-        "    else: rate = len(converted)/len(pool)*100 if pool else 0; print(round(rate, 2))."
+        "    else: rate = len(converted)/len(pool)*100 if pool else None; print(round(rate, 2) if rate is not None else None)."
     ),
     "best_region_identification": (
         "Find which region has the highest (or lowest, per the question) metric. "
