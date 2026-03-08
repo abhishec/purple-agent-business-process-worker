@@ -1256,9 +1256,12 @@ Always wrap code in ```python\\n...\\n``` fences."""
 # Category-specific hints injected into code generation prompt to guide computation approach
 _CRM_CATEGORY_HINTS = {
     "monthly_trend_analysis": (
-        "Find which month has highest/lowest value. "
-        "Use _safe_date(d).strftime('%B') for month names. "
-        "Group by month, then find max/min."
+        "Find which month has the highest (or lowest, per question) total/count. "
+        "Use _safe_date(r.get('DateField')).strftime('%B') for month names — NEVER return month number. "
+        "Try date fields: CreatedDate, CloseDate, Date, TransactionDate, ActivityDate. "
+        "monthly = defaultdict(float); for r in data: d = _safe_date(r.get('CreatedDate')); "
+        "if d: monthly[d.strftime('%B')] += float(r.get('Amount', 1) or 1). "
+        "print(max(monthly, key=monthly.get)) — or min() if question asks lowest."
     ),
     "lead_routing": (
         "CRITICAL: The routing RULES come from the question text — parse them in Python as if/elif chains. "
