@@ -1357,15 +1357,15 @@ _CRM_CATEGORY_HINTS = {
     ),
     "sales_insight_mining": (
         "Identify (1) what to GROUP BY from the question, (2) what metric to aggregate. "
-        "Use this groupby+aggregate pattern: "
-        "groups = defaultdict(float); "
-        "[for r in data: k=r.get('FieldName'); v=float(r.get('Amount') or 0); if k: groups[k]+=v]; "
-        "print(max(groups, key=groups.get)) if groups else print(None). "
+        "Use defaultdict to group then max/min: "
+        "groups = defaultdict(float) "
+        "→ for each record: groups[key_field] += float(amount_field or 0) "
+        "→ print(max(groups, key=groups.get)) or min() per question. "
         "Agent/rep fields: AssignedTo, OwnerId, SalesRep, AgentName, OwnerName. "
         "Product fields: ProductName, Product, Item, SKU, ProductFamily. "
         "Region fields: Region, Territory, BillingState, State, Area. "
-        "For count-based (most X): Counter(r.get('Field') for r in data if r.get('Field')).most_common(1)[0][0]. "
-        "Return EXACT entity name as in data. For min/worst: use min(). print(None) if no data."
+        "For count-based (most X): use Counter(r.get('Field') for r in data if r.get('Field')).most_common(1)[0][0]. "
+        "Return EXACT entity name as in data. print(None) if no data."
     ),
     "top_issue_identification": (
         "Find the most frequent issue category/type across all cases. "
