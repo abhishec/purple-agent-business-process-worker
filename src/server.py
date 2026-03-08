@@ -1317,12 +1317,14 @@ _CRM_CATEGORY_HINTS = {
         "Return EXACT team/queue/agent name string as stated in the question rules."
     ),
     "transfer_count": (
-        "Count case transfers. "
-        "FIRST: check if data[0] has 'TransferCount'/'transfer_count' field: "
-        "tc = data[0].get('TransferCount') if data else None; "
-        "if tc is not None: print(int(tc)) — NOTE: 0 is a valid count, use 'is not None' not just 'if tc'. "
-        "If field missing: count records where Status/PreviousStatus contains 'Transfer', or count DISTINCT queue changes. "
-        "Output: integer only (print 0 if no transfers found)."
+        "Count case transfers. Priority order: "
+        "1. Pre-computed field: _tf = next((f for f in ['TransferCount','transfer_count','NumberOfTransfers','TransferredCount'] if data and data[0].get(f) is not None), None). "
+        "   If found: print(int(data[0].get(_tf))). NOTE: 0 is valid, use 'is not None'. "
+        "2. Transfer event rows: if data has multiple rows (each = a transfer event), print(len(data)). "
+        "3. Status-based: count = sum(1 for r in data if 'transfer' in str(r.get('Status','')+r.get('PreviousStatus','')).lower()); print(count). "
+        "4. Queue-change based: queues=[r.get('Queue') or r.get('AssignedQueue') for r in data]; "
+        "   count = sum(1 for i in range(1,len(queues)) if queues[i] and queues[i] != queues[i-1]); print(count). "
+        "Output: integer only. print(0) if no transfers found."
     ),
     "sales_amount_understanding": (
         "Aggregate the amount field specified or implied in the question. "
@@ -1337,14 +1339,15 @@ _CRM_CATEGORY_HINTS = {
     ),
     "handle_time": (
         "Calculate handle time across cases. "
-        "FIRST: find pre-computed field: AverageHandleTime, HandleTime, AHT, AvgHandleTime, ResolutionTime. "
-        "_ht_field = next((f for f in ['HandleTime','AverageHandleTime','AHT','AvgHandleTime','ResolutionTime'] if data and data[0].get(f) is not None), None). "
-        "If _ht_field found: vals = [float(r.get(_ht_field)) for r in data if r.get(_ht_field) is not None]; "
-        "print(round(statistics.mean(vals), 2)) if vals else print(None). "
+        "FIRST: find pre-computed field: "
+        "_ht_field = next((f for f in ['HandleTime','AverageHandleTime','AHT','AvgHandleTime','ResolutionTime','TalkTime','HoldTime'] if data and data[0].get(f) is not None), None). "
+        "If _ht_field found: vals = [float(r.get(_ht_field)) for r in data if r.get(_ht_field) is not None]. "
+        "Read question for aggregation: 'total'→sum(vals); 'average'/'avg'/'mean'→statistics.mean(vals); default→mean. "
+        "print(int(result) if result == int(result) else round(result, 2)) if vals else print(None). "
         "ELSE compute from dates: "
         "durations=[]; "
         "for r in data: s=_safe_date(r.get('CreatedDate')); e=_safe_date(r.get('ClosedDate') or r.get('ResolvedDate') or r.get('SolvedDate') or r.get('CompletedDate')); "
-        "(durations.append((e-s).total_seconds()) if s and e else None). "
+        "if s and e: durations.append((e-s).total_seconds()). "
         "Output: default MINUTES (divide by 60); 'hours': /3600; 'days': /86400. "
         "int() if whole number, round(x, 2) for decimals."
     ),
@@ -1359,7 +1362,8 @@ _CRM_CATEGORY_HINTS = {
         "Step 3: "
         "  Rate/percentage: rate = len(converted)/len(data)*100 if data else 0; print(round(rate, 2)). "
         "  Count: print(len(converted)). "
-        "  If data has pre-computed rate field (ConversionRate, Rate, conversion_rate): use it directly."
+        "  Pre-computed rate field: _rf = next((f for f in ['ConversionRate','conversion_rate','Rate','ConvertedRate'] if data and data[0].get(f) is not None), None). "
+        "  If _rf found: v=float(data[0].get(_rf)); print(round(v*100,2) if v < 1.0 else round(v,2)) [decimal→% if v<1]."
     ),
     "best_region_identification": (
         "Find which region has the highest (or lowest, per the question) metric. "
