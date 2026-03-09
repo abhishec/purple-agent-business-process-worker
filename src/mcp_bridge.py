@@ -61,11 +61,13 @@ def _is_empty_result(result) -> bool:
             if isinstance(val, (list, dict)) and len(val) == 0:
                 continue  # empty container — keep checking other keys
             return False  # non-empty value found
-    # If none of the expected keys had content, consider it empty
-    return all(
-        (result.get(k) is None or result.get(k) == [] or result.get(k) == {})
-        for k in ("data", "result", "items", "records", "rows")
-    )
+    # Bug 122: custom keys like "leads", "opportunities", "contacts" not in the watched list above.
+    # Check if ANY value is a non-empty list of dicts → likely CRM records.
+    for val in result.values():
+        if isinstance(val, list) and val and isinstance(val[0], dict):
+            return False  # non-empty list of record dicts under a custom key
+    # All standard + custom checks produced nothing — truly empty
+    return True
 
 
 def _format_tools(tools: list[dict]) -> list[dict]:
@@ -227,6 +229,12 @@ def _parse_jsonrpc_result(data: dict) -> dict:
         return {"error": err.get("message", str(err)) if isinstance(err, dict) else str(err)}
 
     result = data.get("result", {})
+
+    # Bug 121: result may be a list or scalar (JSON-RPC result field can be any JSON type).
+    # result.get() crashes with AttributeError when result is a list.
+    # Return list/scalar directly — _is_empty_result and _try_tool handle them correctly.
+    if not isinstance(result, dict):
+        return result if isinstance(result, (list, str, int, float, bool)) else {}
 
     if result.get("isError"):
         content = result.get("content", [])

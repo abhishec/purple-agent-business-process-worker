@@ -1265,7 +1265,7 @@ PersonRef=ContactId, StatusCode=Status, Title=Subject, Details=Description.
 Date handling:
 - ALWAYS use _safe_date(d) instead of manual strptime — it handles all formats and timezones
 - "Today's date: YYYY-MM-DD" or "Current date: YYYY-MM-DD" may appear in context_data
-- Extract today: m = re.search(r"(?:today|current).{0,30}(\d{4}-\d{2}-\d{2})", (context_data or '') + ' ' + (prompt_text or ''), re.I); today = _safe_date(m.group(1)) if m else dt.now()
+- Extract today: m = re.search(r"(?:today|current).{0,30}(\\d{4}-\\d{2}-\\d{2})", (context_data or '') + ' ' + (prompt_text or ''), re.I); today = _safe_date(m.group(1)) if m else dt.now()
 - Filter dates: [r for r in data if _safe_date(r.get('CreatedDate')) and _safe_date(r.get('CreatedDate')) >= cutoff]
 - "last N months": cutoff = today - timedelta(days=N*30)
 - "last N quarters": cutoff = today - timedelta(days=N*90)
