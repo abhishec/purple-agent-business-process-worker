@@ -2757,6 +2757,34 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
         except Exception as _re:
             print(f"[crm] top-retry failed cat={category}: {_re}", flush=True)
 
+    # ── BrainOS MoA analytical fallback: last-chance reasoning via DeepSeek-R1 ─
+    # Called when code_exec + cross-strategy retry both produce "None" with real data.
+    # BrainOS routes small contexts (<3K chars) to DeepSeek-R1 (think tokens → step-by-step
+    # reasoning), larger contexts to Haiku. Cheaper and more accurate than Sonnet single-shot
+    # for numerical aggregation tasks (sales totals, rates, monthly trends).
+    # Skip for text/privacy cats (handled by dedicated paths above).
+    if (answer == "None"
+            and BRAINOS_API_KEY and BRAINOS_ORG_ID
+            and _context_has_real_data(context)
+            and category not in _CRM_PRIVATE_CATEGORIES
+            and category not in _CRM_TEXT_CATEGORIES):
+        _moa_elapsed = time.monotonic() - _task_start
+        _moa_budget = max(58.0 - _moa_elapsed, 0.0)
+        if _moa_budget > 10.0:
+            print(f"[crm] brainos-moa fallback cat={category} budget={_moa_budget:.1f}s ctx={len(context)}", flush=True)
+            try:
+                from src.brainos_client import brainos_analytical_fallback as _moa_fallback
+                _moa_ans = await asyncio.wait_for(
+                    _moa_fallback(prompt, context, category, session_id,
+                                  timeout=min(_moa_budget - 2.0, 16.0)),
+                    timeout=min(_moa_budget, 18.0),
+                )
+                if _moa_ans and _moa_ans != "None" and not _is_refusal_response(_moa_ans):
+                    print(f"[crm] brainos-moa RECOVERED cat={category} {_moa_ans[:60]!r}", flush=True)
+                    answer = _moa_ans
+            except Exception as _moa_e:
+                print(f"[crm] brainos-moa error cat={category}: {_moa_e}", flush=True)
+
     # ── Record outcome to Brain (all 5 layers, zero LLM cost) ─────────────────
     if _crm_router is not None:
         reward = _crm_router.reward(answer, strategy)

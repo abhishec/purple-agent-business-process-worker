@@ -21,15 +21,20 @@ async def run_task(
     worker_id: str | None = None,
     eval_hints: dict | None = None,
     timeout: float | None = None,
+    research_mode: bool = False,
 ) -> str:
     """
     Stream a task through BrainOS copilot API.
     Handles SSE stream, detects tool_call events, calls on_tool_call, injects results.
     Raises BrainOSUnavailableError on connection failure or timeout.
 
+    research_mode: when True, routes to the orchestration/research pipeline (GAIA-style
+                   web search + tools). When False (default), routes to the copilot path
+                   (direct LLM with embedded context — correct for CRM computation tasks).
+
     eval_hints: passed as evalHints to BrainOS — enables local LLM routing,
                 bandit strategy selection, and prescreen (cheap inference path).
-                Example: {"taskType": "crm", "model": "claude-haiku-4-5-20251001",
+                Example: {"model": "claude-haiku-4-5-20251001",
                           "preScreenEnabled": True, "preScreenConfidence": 0.65,
                           "banditEnabled": True, "banditCategory": "crm_analytics"}
     """
@@ -48,9 +53,10 @@ async def run_task(
         "message": message,
         "conversationId": session_id,
         "organizationId": org_id,
-        "isResearchMode": True,
         "extraParams": {"systemContext": system_context},
     }
+    if research_mode:
+        payload["isResearchMode"] = True
     if worker_id:
         payload["workerId"] = worker_id
     if eval_hints:
@@ -108,6 +114,90 @@ async def run_task(
         raise BrainOSUnavailableError(str(e)) from e
 
 
+async def brainos_analytical_fallback(
+    prompt: str,
+    crm_context: str,
+    category: str,
+    session_id: str,
+    timeout: float = 18.0,
+) -> str | None:
+    """
+    BrainOS analytical reasoning fallback for CRM tasks that code_exec couldn't solve.
+
+    Routes through copilot/chat path (NOT research mode) with embedded CRM data.
+    For small contexts (< 3000 chars): DeepSeek-R1 local LLM reasons step-by-step (~$0).
+    For larger contexts: Claude Haiku computes directly (~$0.003).
+
+    Called AFTER code_exec + top-level retry both produce "None".
+    This is the last-chance path before giving up — uses BrainOS RL learning to
+    improve routing accuracy across runs.
+
+    Returns None if BrainOS is unavailable or returns empty/refusal.
+    """
+    if not BRAINOS_API_KEY or not BRAINOS_ORG_ID:
+        return None
+
+    context_len = len(crm_context)
+    ctx_snippet = crm_context[:15000]  # guard context window
+
+    # Structured prompt: forces step-by-step reasoning, not code generation
+    message = (
+        f"CRM Analytics — Category: {category}\n\n"
+        f"Question: {prompt}\n\n"
+        f"CRM Data ({context_len} chars):\n{ctx_snippet}\n\n"
+        f"Reason through the data step by step. "
+        f"Return ONLY the final answer value — no explanation, no units, no prefix.\n"
+        f"If the answer cannot be determined from the data: respond exactly: None"
+    )
+    system_context = (
+        "You are a CRM data analyst. Compute the exact answer by reasoning through the data. "
+        "Return ONLY the answer value. No explanation. No prefix. Just the value. "
+        "For numbers: just the number (e.g., 42, 25.5). "
+        "For names/IDs: exact string as in data. "
+        "For months: full month name (January, February...). "
+        "If no answer found: None"
+    )
+
+    # Use local LLM pre-screen for small contexts where DeepSeek-R1 fits the data
+    # For large contexts, skip pre-screen (local LLM would truncate) → Haiku handles it
+    use_prescreen = context_len < 3000
+    eval_hints = {
+        "model": "claude-haiku-4-5-20251001",
+        "preScreenEnabled": use_prescreen,
+        "preScreenConfidence": 0.50,  # very low — accept local LLM answer even if uncertain
+        "banditEnabled": True,
+        "banditCategory": f"crm_moa_{category}",  # separate bandit arm from primary path
+    }
+
+    async def _noop(name: str, params: dict) -> dict:
+        return {"error": "no tools"}
+
+    try:
+        answer = await asyncio.wait_for(
+            run_task(
+                message=message,
+                system_context=system_context,
+                on_tool_call=_noop,
+                session_id=f"moa_{session_id}",
+                eval_hints=eval_hints,
+                timeout=timeout,
+                research_mode=False,  # copilot path — direct LLM, NOT web search
+            ),
+            timeout=timeout + 2.0,
+        )
+        if not answer or len(answer.strip()) < 1:
+            return None
+        if answer.strip().startswith("<!"):  # HTML error page
+            return None
+        return answer.strip()
+    except (BrainOSUnavailableError, asyncio.TimeoutError) as e:
+        print(f"[brainos-moa] unavailable cat={category}: {e}", flush=True)
+        return None
+    except Exception as e:
+        print(f"[brainos-moa] error cat={category}: {e}", flush=True)
+        return None
+
+
 async def run_crm_task(
     prompt: str,
     crm_context: str,
@@ -138,7 +228,8 @@ async def run_crm_task(
         "If the answer is None/not found: respond with exactly: None"
     )
     eval_hints = {
-        "taskType": "crm",
+        # No taskType — routes to copilot path (direct LLM), NOT research pipeline.
+        # CRM tasks need direct computation from embedded data, not web search.
         "model": "claude-haiku-4-5-20251001",    # Haiku fallback if local LLM can't handle it
         "preScreenEnabled": True,
         "preScreenConfidence": 0.60,             # lower threshold — accept local LLM at 60%
@@ -162,6 +253,7 @@ async def run_crm_task(
                 session_id=session_id,
                 eval_hints=eval_hints,
                 timeout=timeout,
+                research_mode=False,             # copilot path — NOT research/web-search
             ),
             timeout=timeout + 2.0,
         )
