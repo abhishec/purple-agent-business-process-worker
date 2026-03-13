@@ -14,7 +14,7 @@ from src.dynamic_fsm import get_synthesis_stats
 from src.dynamic_tools import seed_amortization_tool, get_tool_registry_stats
 from src.strategy_bandit import get_stats as get_bandit_stats, ensure_warmed as bandit_warm
 from src.report_analyzer import analyze_and_save, load_intelligence
-from src.config import ANTHROPIC_API_KEY, FALLBACK_MODEL, FAST_MODEL, GREEN_AGENT_MCP_URL
+from src.config import ANTHROPIC_API_KEY, FALLBACK_MODEL, FAST_MODEL, GREEN_AGENT_MCP_URL, BRAINOS_API_KEY, BRAINOS_ORG_ID
 from src.officeqa_executor import is_officeqa_task, handle_officeqa_turn  # OfficeQA evaluator
 
 # ── Tau2-bench multi-turn session state ───────────────────────────────────────
@@ -1807,21 +1807,19 @@ async def _crm_fetch_context_via_tools(
     return ""
 
 
-async def _crm_code_exec(prompt: str, context: str, category: str, model: str | None = None, task_start: float = 0.0) -> str | None:
-    """Two-stage: generate Python code via Sonnet, execute, return answer.
+async def _crm_code_exec(prompt: str, context: str, category: str, model: str | None = None, task_start: float = 0.0, session_id: str = "") -> str | None:
+    """Two-stage: generate Python code via BrainOS, execute, return answer.
 
-    Always uses FALLBACK_MODEL (Sonnet) for code generation even if DAAO
-    suggested Haiku. Analytics code execution requires complex Python:
-    date filtering, aggregation, routing logic — Haiku fails on these.
+    Routes code generation through BrainOS copilot/chat — BrainOS selects
+    the cheapest model (local LLM free, Haiku ~$0.003, bandit-gated).
+    No direct Anthropic SDK calls — all cost flows through BrainOS.
     Returns None if code generation or execution fails so caller can fallback.
 
     task_start: monotonic timestamp from _handle_crm_turn to budget retry vs 60s deadline.
+    session_id: used to scope BrainOS bandit learning per conversation.
     """
-    import anthropic as _anthropic
     import time as _time_exec
-    # Simple routing/count categories use Haiku (explicit rules in question → no complex reasoning)
-    # All others use Sonnet — aggregation/analytics require complex Python generation
-    code_model = FAST_MODEL if category in _CRM_HAIKU_EXEC_CATEGORIES else FALLBACK_MODEL
+    from src.brainos_client import run_code_gen_task as _run_codegen
 
     # Two-level context handling:
     # - ctx_sandbox: FULL context for sandbox code execution (no truncation)
@@ -1888,22 +1886,20 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         f"Question: {prompt}\n\n"
         f"CRM Data:\n{ctx}"
     )
+    _cg_timeout = min(22.0, max(8.0, 60.0 - (_time_exec.monotonic() - task_start) - 4.0) if task_start > 0 else 22.0)
     try:
-        client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-        # 20s LLM timeout: with 2 LLM calls (20s each) + 2 sandbox runs (8s each) = 56s < 60s limit
-        resp = await asyncio.wait_for(
-            client.messages.create(
-                model=code_model,
-                max_tokens=900,  # CRM code is ~20-30 lines; 900 tokens is generous headroom
-                temperature=0.2,   # low temp = deterministic, fewer hallucinated field names
-                system=[{"type": "text", "text": _CODE_EXEC_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-                messages=[{"role": "user", "content": user_msg}],
-            ),
-            timeout=20.0,
+        raw = await _run_codegen(
+            message=user_msg,
+            system_context=_CODE_EXEC_SYSTEM,
+            category=category,
+            session_id=session_id or f"cg_{abs(hash(prompt + category))}",
+            timeout=_cg_timeout,
         )
-        raw = resp.content[0].text
     except Exception as exc:
         print(f"[crm-exec] code gen failed: {exc}", flush=True)
+        return None
+    if not raw:
+        print(f"[crm-exec] code gen no response cat={category}", flush=True)
         return None
 
     code = _extract_code_block(raw)
@@ -2067,17 +2063,15 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
         + "\n".join(_fix_hints)
     )
     try:
-        resp2 = await asyncio.wait_for(
-            client.messages.create(
-                model=code_model,
-                max_tokens=800,  # retry: targeted fix → even shorter code
-                temperature=0.1,   # even lower on retry — target the specific error precisely
-                system=[{"type": "text", "text": _CODE_EXEC_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-                messages=[{"role": "user", "content": retry_msg}],
-            ),
-            timeout=20.0,
+        _retry_timeout = min(20.0, max(5.0, 60.0 - (_time_exec.monotonic() - task_start) - 2.0) if task_start > 0 else 20.0)
+        _raw2 = await _run_codegen(
+            message=retry_msg,
+            system_context=_CODE_EXEC_SYSTEM,
+            category=category,
+            session_id=session_id or f"cg_{abs(hash(prompt + category))}",
+            timeout=_retry_timeout,
         )
-        code2 = _extract_code_block(resp2.content[0].text)
+        code2 = _extract_code_block(_raw2) if _raw2 else None
         if code2:
             full_code2 = (
                 _SANDBOX_HEADER
@@ -2515,7 +2509,7 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
         if answer:
             pass  # BrainOS already answered — skip direct execution
         elif strategy == "code_exec":
-            answer = await _crm_code_exec(prompt, context, category, model=model, task_start=_task_start) or ""
+            answer = await _crm_code_exec(prompt, context, category, model=model, task_start=_task_start, session_id=session_id) or ""
             if not answer:
                 # Code exec failed — check if context actually had data
                 if not _context_has_real_data(context):
@@ -2748,7 +2742,8 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
                 # LLM returned None — try code exec as a cross-check
                 _retry_ans = await asyncio.wait_for(
                     _crm_code_exec(prompt, context, category,
-                                   model=FALLBACK_MODEL, task_start=_task_start),
+                                   model=FALLBACK_MODEL, task_start=_task_start,
+                                   session_id=session_id),
                     timeout=min(_retry_budget, 25.0),
                 ) or "None"
             if _retry_ans and _retry_ans != "None" and not _is_refusal_response(_retry_ans):
