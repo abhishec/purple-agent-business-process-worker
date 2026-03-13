@@ -1325,7 +1325,67 @@ Field name detection (CRITICAL — applies to every category):
 - For categorical/string fields: use `any(r.get(f) for r in data[:5])` — skip None AND empty string
 - This same pattern applies to ALL field selections: date fields, owner fields, status fields, etc.
 
-Always wrap code in ```python\\n...\\n``` fences."""
+Always wrap code in ```python\\n...\\n``` fences.
+
+--- FEW-SHOT EXAMPLES (study these — they show the correct pattern for each cluster) ---
+
+EXAMPLE 1 — aggregation: best region by total revenue
+Question: "Which region generated the highest total sales revenue?"
+```python
+_af = next((f for f in ['Amount','Revenue','TotalAmount','SalesAmount','ARR','Value'] if any(r.get(f) is not None for r in data[:5])), 'Amount')
+_gf = next((f for f in ['Region','BillingState','Territory','State'] if any(r.get(f) for r in data[:5])), 'Region')
+totals = defaultdict(float)
+for r in data:
+    region = r.get(_gf)
+    val = _safe_num(r.get(_af))
+    if region and val is not None:
+        totals[region] += val
+print(max(totals, key=totals.get) if totals else None)
+```
+
+EXAMPLE 2 — analytical: conversion rate
+Question: "What is the lead conversion rate (as a percentage)?"
+```python
+def is_true(v): return v in (True, 'true', 'True', 'TRUE', 1, '1', 'Yes', 'yes', 'YES')
+_cf = next((f for f in ['IsConverted','is_converted','Converted'] if any(r.get(f) is not None for r in data[:5])), 'IsConverted')
+converted = sum(1 for r in data if is_true(r.get(_cf)))
+total = len(data)
+print(round(converted / total * 100, 2) if total > 0 else 0)
+```
+
+EXAMPLE 3 — monthly trend: best month by count
+Question: "Which month had the highest number of cases created?"
+```python
+_df = next((f for f in ['CreatedDate','Date','OpenDate','CloseDate'] if any(r.get(f) for r in data[:5])), 'CreatedDate')
+month_counts = Counter()
+for r in data:
+    d = _safe_date(r.get(_df))
+    if d:
+        month_counts[d.strftime('%B')] += 1
+print(max(month_counts, key=month_counts.get) if month_counts else None)
+```
+
+EXAMPLE 4 — lookup: field value from a specific record
+Question: "What is the owner of opportunity OPP-001?"
+```python
+_idf = next((f for f in ['Id','OpportunityId','CaseId','LeadId','ID'] if any(r.get(f) for r in data[:5])), 'Id')
+_of = next((f for f in ['OwnerId','Owner','AssignedAgent','AssignedTo'] if any(r.get(f) for r in data[:5])), 'OwnerId')
+target_id = next((v for v in [prompt_text] if v), '')
+import re as _re_id
+_id_match = _re_id.search(r'[A-Z]+-\\d+|[A-Za-z0-9]{15,18}', target_id)
+target = _id_match.group() if _id_match else ''
+match = next((r for r in data if str(r.get(_idf,'')).strip() == target), None)
+print(match.get(_of) if match else None)
+```
+
+EXAMPLE 5 — count/aggregation with zero guard
+Question: "How many leads have status 'Closed'?"
+```python
+_sf = next((f for f in ['Status','LeadStatus','CaseStatus','Stage'] if any(r.get(f) for r in data[:5])), 'Status')
+count = sum(1 for r in data if str(r.get(_sf,'')).strip().lower() == 'closed')
+print(count)
+```
+"""
 
 
 # Category-specific hints injected into code generation prompt to guide computation approach
