@@ -1024,18 +1024,25 @@ _CRM_ENTITY_SPECIFIC_CATEGORIES = {
 # Code_exec categories routed to Haiku (cheap fast model) instead of Sonnet.
 # Criteria: single-record field lookups OR explicit if/elif rules → no complex reasoning.
 # Routing, counting, single-record validation/lookup all qualify.
-# Added lead_qualification/quote_approval/invalid_config: single-record, hint has full logic.
+# Extended 2026-03-13: wrong_stage_rectification (single-record stage check),
+# activity_priority (rule-based priority ordering) → both fit Haiku capability.
 _CRM_HAIKU_EXEC_CATEGORIES = {
     "lead_routing", "case_routing", "transfer_count",
     "lead_qualification", "quote_approval", "invalid_config",
+    "wrong_stage_rectification", "activity_priority",
 }
 
 # ── Field drift aliases for medium-level schema drift (hardcoded by evaluator) ─
 _CRM_DRIFT_NOTE = (
-    "Field name aliases (renamed in this data): "
-    "AssignedAgent→OwnerId, ClientId→AccountId, PersonRef→ContactId, "
-    "StatusCode→Status, Title→Subject, Details→Description. "
-    "Handle BOTH original and renamed versions."
+    "SCHEMA DRIFT — field names may have been renamed. Common aliases:\n"
+    "  AssignedAgent→OwnerId, ClientId→AccountId, PersonRef→ContactId,\n"
+    "  StatusCode→Status, Title→Subject, Details→Description,\n"
+    "  Revenue→AnnualRevenue, ContactEmail→Email, RepName→Name,\n"
+    "  Priority→CasePriority, Stage→StageName, Source→LeadSource,\n"
+    "  CompanyName→Account, DealValue→Amount, ARR→Amount,\n"
+    "  AgentId→OwnerId, CaseOwner→OwnerId, Assignee→OwnerId,\n"
+    "  Region→StateCode, Territory→StateCode, ClosedOn→CloseDate.\n"
+    "Use record.get(field) and try both original and alias names."
 )
 
 
@@ -1877,6 +1884,7 @@ async def _crm_code_exec(prompt: str, context: str, category: str, model: str | 
 
     user_msg = (
         f"Category: {category}" + (f" — Hint: {_cat_hint}" if _cat_hint else "") + _upfront_field_hint + "\n"
+        f"{_CRM_DRIFT_NOTE}\n"
         f"Question: {prompt}\n\n"
         f"CRM Data:\n{ctx}"
     )
@@ -2102,12 +2110,12 @@ async def _crm_llm_direct(prompt: str, context: str, persona: str, category: str
     is_private = category in _CRM_PRIVATE_CATEGORIES
     is_text_qa = category in _CRM_TEXT_CATEGORIES
     is_entity_specific = category in _CRM_ENTITY_SPECIFIC_CATEGORIES
-    # Model selection:
+    # Model selection (2026-03-13: cost-optimised):
     # - Private refusals → Haiku (fast, cheap; hard-refusal bypasses this anyway)
-    # - Entity-specific lookups → Haiku (single-record field reads, hints explicit)  Bug 099
-    # - Text QA (knowledge_qa, policy) → Sonnet (needs reasoning over KB articles)
-    # - Analytical fallback → Sonnet (needs accuracy for aggregation)
-    resolved_model = FAST_MODEL if (is_private or is_entity_specific) else FALLBACK_MODEL
+    # - Entity-specific lookups → Haiku (single-record field reads, hints explicit)
+    # - Text QA (knowledge_qa, policy) → Haiku (KB text is in context; no web search needed)
+    # - Analytical fallback → BrainOS local LLM via caller, or Sonnet if unavailable
+    resolved_model = FAST_MODEL if (is_private or is_entity_specific or is_text_qa) else FALLBACK_MODEL
 
     if is_private:
         system_prompt = (
@@ -2470,10 +2478,43 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
                 print(f"[crm] no-content task cat={category} → None", flush=True)
                 return "None"
 
-    # ── Execute chosen strategy with DAAO-selected model ─────────────────────
+    # ── BrainOS local LLM primary path (cheap: DeepSeek-R1 first, Haiku fallback) ─
+    # Only for analytical/entity categories where context is available and budget allows.
+    # BrainOS routes to local SageMaker LLM (~$0) before falling back to Claude Haiku.
+    # Skip for: privacy (hard refusal), text_qa (needs KB reasoning Sonnet handles), code_exec
+    # categories with large datasets (BrainOS context window is limited to 20K chars).
+    _elapsed_pre_exec = time.monotonic() - _task_start
+    _brainos_budget = max(58.0 - _elapsed_pre_exec, 0.0)
+    _brainos_tried = False
     answer: str = ""
+    if (
+        BRAINOS_API_KEY and BRAINOS_ORG_ID
+        and category not in _CRM_PRIVATE_CATEGORIES
+        and category not in _CRM_TEXT_CATEGORIES        # text_qa uses KB context Haiku handles
+        and strategy != "code_exec"                     # code_exec needs Python sandbox
+        and _context_has_real_data(context)
+        and len(context) <= 20000                       # BrainOS context window guard
+        and _brainos_budget > 12.0
+    ):
+        from src.brainos_client import run_crm_task as _run_crm, BrainOSUnavailableError as _BrainOSErr
+        try:
+            _brainos_answer = await asyncio.wait_for(
+                _run_crm(prompt, context, category, session_id, timeout=min(_brainos_budget - 5.0, 30.0)),
+                timeout=min(_brainos_budget - 3.0, 33.0),
+            )
+            if _brainos_answer and _brainos_answer != "None" and not _is_refusal_response(_brainos_answer):
+                print(f"[crm] brainos path cat={category} ans={_brainos_answer[:60]!r}", flush=True)
+                answer = _brainos_answer
+                _brainos_tried = True
+        except (_BrainOSErr, asyncio.TimeoutError, Exception) as _be:
+            print(f"[crm] brainos skip cat={category}: {_be} → fallback to direct", flush=True)
+
+    # ── Execute chosen strategy with DAAO-selected model ─────────────────────
+    # Only runs if BrainOS path didn't produce a valid answer.
     try:
-        if strategy == "code_exec":
+        if answer:
+            pass  # BrainOS already answered — skip direct execution
+        elif strategy == "code_exec":
             answer = await _crm_code_exec(prompt, context, category, model=model, task_start=_task_start) or ""
             if not answer:
                 # Code exec failed — check if context actually had data
@@ -2683,6 +2724,38 @@ async def _handle_crm_turn(task_text: str, session_id: str = "", tools_endpoint:
         if _normalized_yn != answer.strip():
             print(f"[crm] yes/no normalize cat={category} {answer!r}→{_normalized_yn!r}", flush=True)
         answer = _normalized_yn
+
+    # ── Top-level recovery retry: if answer=None but we had real data, try the  ──
+    # other strategy once. Code_exec failure → llm_direct; llm_direct None → code_exec.
+    # This catches schema drift KeyErrors that survive both code_exec attempts and
+    # cases where llm_direct confidently says "None" for a task with actual CRM data.
+    _elapsed_final = time.monotonic() - _task_start
+    _retry_budget = max(58.0 - _elapsed_final, 0.0)
+    if (answer == "None"
+            and _context_has_real_data(context)
+            and category not in _CRM_PRIVATE_CATEGORIES
+            and _retry_budget > 8.0):
+        print(f"[crm] top-retry cat={category} strategy={strategy} budget={_retry_budget:.1f}s", flush=True)
+        try:
+            if strategy == "code_exec":
+                # Code exec returned None/empty — try direct LLM reasoning with Sonnet
+                _retry_ans = await asyncio.wait_for(
+                    _crm_llm_direct(prompt, context, persona, category,
+                                    model=FALLBACK_MODEL, timeout=min(_retry_budget - 2.0, 18.0)),
+                    timeout=min(_retry_budget, 20.0),
+                )
+            else:
+                # LLM returned None — try code exec as a cross-check
+                _retry_ans = await asyncio.wait_for(
+                    _crm_code_exec(prompt, context, category,
+                                   model=FALLBACK_MODEL, task_start=_task_start),
+                    timeout=min(_retry_budget, 25.0),
+                ) or "None"
+            if _retry_ans and _retry_ans != "None" and not _is_refusal_response(_retry_ans):
+                print(f"[crm] top-retry RECOVERED cat={category} {_retry_ans[:60]!r}", flush=True)
+                answer = _retry_ans
+        except Exception as _re:
+            print(f"[crm] top-retry failed cat={category}: {_re}", flush=True)
 
     # ── Record outcome to Brain (all 5 layers, zero LLM cost) ─────────────────
     if _crm_router is not None:
