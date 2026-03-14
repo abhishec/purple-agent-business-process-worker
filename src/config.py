@@ -4,6 +4,7 @@ import os
 BRAINOS_API_URL = os.getenv("BRAINOS_API_URL", "https://platform.usebrainos.com")
 BRAINOS_API_KEY = os.getenv("BRAINOS_API_KEY", "")
 BRAINOS_ORG_ID = os.getenv("BRAINOS_ORG_ID", "")
+BRAINOS_WORKER_ID = os.getenv("BRAINOS_WORKER_ID", "")  # AI Worker ID — gates LoRA adapter + brain context
 GREEN_AGENT_MCP_URL = os.getenv("GREEN_AGENT_MCP_URL", "http://localhost:9009")
 FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "claude-sonnet-4-6")
 FAST_MODEL = os.getenv("FAST_MODEL", "claude-haiku-4-5-20251001")

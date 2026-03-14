@@ -3,9 +3,10 @@
   config_schema: {
     type: "object",
     properties: {
-      anthropic_api_key: { type: "string", secret: true },
-      brainos_api_key:   { type: "string", secret: true },
-      brainos_org_id:    { type: "string", secret: true },
+      anthropic_api_key:  { type: "string", secret: true },
+      brainos_api_key:    { type: "string", secret: true },
+      brainos_org_id:     { type: "string", secret: true },
+      brainos_worker_id:  { type: "string", secret: true },
     },
     required: ["anthropic_api_key"],
     additionalProperties: false,
@@ -20,6 +21,7 @@
       ANTHROPIC_API_KEY:   "${config.anthropic_api_key}",
       BRAINOS_API_KEY:     "${config.brainos_api_key}",
       BRAINOS_ORG_ID:      "${config.brainos_org_id}",
+      BRAINOS_WORKER_ID:   "${config.brainos_worker_id}",
     },
     network: {
       endpoints: [

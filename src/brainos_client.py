@@ -5,7 +5,7 @@ from typing import Callable, Awaitable
 
 import httpx
 
-from src.config import BRAINOS_API_URL, BRAINOS_API_KEY, BRAINOS_ORG_ID, TASK_TIMEOUT
+from src.config import BRAINOS_API_URL, BRAINOS_API_KEY, BRAINOS_ORG_ID, BRAINOS_WORKER_ID, TASK_TIMEOUT
 
 
 class BrainOSUnavailableError(Exception):
@@ -186,6 +186,7 @@ async def brainos_analytical_fallback(
                 eval_hints=eval_hints,
                 timeout=timeout,
                 research_mode=False,  # copilot path — direct LLM, NOT web search
+                worker_id=BRAINOS_WORKER_ID or None,  # gates LoRA adapter + core brain context
             ),
             timeout=timeout + 2.0,
         )
@@ -251,6 +252,7 @@ async def run_code_gen_task(
                 eval_hints=eval_hints,
                 timeout=timeout,
                 research_mode=False,
+                worker_id=BRAINOS_WORKER_ID or None,  # gates LoRA adapter + core brain context
             ),
             timeout=timeout + 2.0,
         )
@@ -324,6 +326,7 @@ async def run_crm_task(
                 eval_hints=eval_hints,
                 timeout=timeout,
                 research_mode=False,             # copilot path — NOT research/web-search
+                worker_id=BRAINOS_WORKER_ID or None,  # gates LoRA adapter + core brain context
             ),
             timeout=timeout + 2.0,
         )
