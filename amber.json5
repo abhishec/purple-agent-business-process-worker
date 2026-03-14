@@ -2,15 +2,24 @@
   manifest_version: "0.1.0",
   config_schema: {
     type: "object",
-    properties: {},
+    properties: {
+      anthropic_api_key: { type: "string", secret: true },
+      brainos_api_key:   { type: "string", secret: true },
+      brainos_org_id:    { type: "string", secret: true },
+    },
+    required: ["anthropic_api_key"],
     additionalProperties: false,
   },
   program: {
     image: "public.ecr.aws/d9m7h3k5/agentbench-purple:latest",
     entrypoint: ["python", "main.py", "--host", "0.0.0.0", "--port", "9010"],
     env: {
-      // Inject CRM gateway oracle URL so purple agent can query CRM data
+      // CRM gateway oracle URL injected by AgentBeats platform at runtime
       GREEN_AGENT_MCP_URL: "${slots.green_agent.url}",
+      // LLM credentials — injected securely from config_schema secrets
+      ANTHROPIC_API_KEY:   "${config.anthropic_api_key}",
+      BRAINOS_API_KEY:     "${config.brainos_api_key}",
+      BRAINOS_ORG_ID:      "${config.brainos_org_id}",
     },
     network: {
       endpoints: [

@@ -1111,18 +1111,33 @@ def _context_has_real_data(context: str) -> bool:
     lines = [l for l in ctx.split('\n') if l.strip()]
     if len(lines) > 3 and sum(1 for l in lines if ',' in l) > 2:
         return True
-    # CRM record markers — a single marker is enough to try computing
-    data_markers = [
+    # Guide texts are short plain-text instructions (< 300 chars, no newlines with data)
+    # e.g. "Sales insight mining. Opportunity Id: 006Wt..." or "Lead Id: 00QWt..."
+    # These look like they have CRM markers but are just navigation hints — NOT data records.
+    # Heuristic: if context is < 300 chars and has no more than 3 lines, it's a guide.
+    if len(ctx) < 300:
+        lines_with_content = [l for l in ctx.split('\n') if l.strip()]
+        if len(lines_with_content) <= 3:
+            # Short guide text — only count as real data if it's JSON-like or has tabular structure
+            return False
+
+    # CRM record markers — require JSON-quoted markers (JSON field format) for solid detection
+    # Unquoted markers like "Id:" match too broadly (e.g. "Opportunity Id:" guide texts)
+    json_markers = [
         '"Id":', '"OwnerId":', '"AccountId":', '"ContactId":', '"Status":',
         '"CreatedDate":', '"CloseDate":', '"Amount":', '"TransferCount":',
-        'Id:', 'OwnerId:', 'AccountId:', 'ContactId:',
-        'CaseNumber', 'LeadSource', 'StageName', 'Amount',
-        'OpportunityId', 'CaseId', 'LeadId', 'QuoteId',
-        'TransferCount', 'HandleTime', 'conversion_rate',
-        # Tab-separated / structured text markers
-        '\t', '|',
+        '"StageName":', '"LeadSource":', '"CaseNumber":', '"Priority":',
     ]
-    return any(m in ctx for m in data_markers)
+    if any(m in ctx for m in json_markers):
+        return True
+    # CSV-like: multiple lines with commas (actual record data)
+    lines = [l for l in ctx.split('\n') if l.strip()]
+    if len(lines) > 4 and sum(1 for l in lines if ',' in l) > 3:
+        return True
+    # Tab-separated record data
+    if '\t' in ctx and len(lines) > 2:
+        return True
+    return False
 
 
 def _is_refusal_response(answer: str) -> bool:
