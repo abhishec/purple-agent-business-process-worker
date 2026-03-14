@@ -1,5 +1,10 @@
 {
   manifest_version: "0.1.0",
+  config_schema: {
+    type: "object",
+    properties: {},
+    additionalProperties: false,
+  },
   program: {
     image: "public.ecr.aws/d9m7h3k5/agentbench-purple:latest",
     entrypoint: ["python", "main.py", "--host", "0.0.0.0", "--port", "9010"],
